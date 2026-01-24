@@ -1,7 +1,7 @@
 defmodule RustyJson.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "0.1.1"
 
   def project do
     [
@@ -51,10 +51,7 @@ defmodule RustyJson.MixProject do
   end
 
   defp description() do
-    """
-    A high-performance JSON library for Elixir, powered by Rust NIFs.
-    3-5x faster encoding than Jason with full spec compliance.
-    """
+    "Rust-powered JSON library for Elixir. Drop-in Jason replacement with 10-20x lower memory usage."
   end
 
   defp package() do
