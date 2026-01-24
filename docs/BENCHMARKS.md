@@ -124,12 +124,13 @@ Jason creates many small allocations that cause GC pressure. RustyJson creates o
 ### BEAM Work Comparison
 
 ```elixir
-# Reductions (BEAM work units) for encoding canada.json:
-RustyJson.encode!(data)  # 322 reductions
-Jason.encode!(data)      # 962,398 reductions (3000x more!)
+# Reductions (BEAM work units) for encoding:
+# canada.json:       RustyJson ~3,500   vs Jason ~964,000  (275x fewer)
+# citm_catalog.json: RustyJson ~300     vs Jason ~621,000  (2000x fewer)
+# twitter.json:      RustyJson ~2,000   vs Jason ~511,000  (260x fewer)
 ```
 
-The real benefit of RustyJson is **reduced BEAM scheduler load** - all the heavy lifting happens in native code.
+The real benefit of RustyJson is **reduced BEAM scheduler load** (100-2000x fewer reductions) - all the heavy lifting happens in native code.
 
 ## Running Benchmarks
 

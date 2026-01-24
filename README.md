@@ -10,7 +10,7 @@ A JSON library for Elixir powered by Rust NIFs, designed as a drop-in replacemen
 
 **RustyJson's approach**: Rather than trying to beat Jason on speed alone, RustyJson focuses on:
 1. **Lower memory usage** during encoding (2-4x less BEAM memory for large payloads)
-2. **Reduced BEAM scheduler load** (3000x fewer reductions - work happens in native code)
+2. **Reduced BEAM scheduler load** (100-2000x fewer reductions - work happens in native code)
 3. **Faster encoding/decoding** (2-3x faster for medium/large data)
 4. **Full Jason API compatibility** as a true drop-in replacement
 5. **Modern Rustler 0.37+ support** for compatibility with the ecosystem
@@ -112,11 +112,11 @@ Using datasets from [nativejson-benchmark](https://github.com/miloyip/nativejson
 
 ```elixir
 # Reductions (BEAM work units) for encoding canada.json:
-RustyJson.encode!(data)  # 322 reductions
-Jason.encode!(data)      # 962,398 reductions (3000x less!)
+RustyJson.encode!(data)  # ~3,500 reductions
+Jason.encode!(data)      # ~964,000 reductions (275x fewer!)
 ```
 
-The real benefit is **reduced BEAM scheduler load** - JSON processing happens in native code, freeing your schedulers for other work.
+The real benefit is **reduced BEAM scheduler load** (100-2000x fewer reductions depending on payload) - JSON processing happens in native code, freeing your schedulers for other work.
 
 *Note: Small payloads (<1KB) show minimal difference due to NIF call overhead. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for detailed methodology.*
 
