@@ -28,8 +28,6 @@ rustyjson-*.tar
 
 native/rustyjson/target/
 
-checksum-*.exs
-
 # Dialyzer PLT files
 /priv/plts/
 

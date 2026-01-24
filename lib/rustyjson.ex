@@ -191,6 +191,7 @@ defmodule RustyJson do
     otp_app: :rustyjson,
     base_url: "#{source_url}/releases/download/v#{version}",
     force_build: force_build?,
+    nif_versions: ["2.15", "2.16", "2.17"],
     targets: RustlerPrecompiled.Config.default_targets(),
     version: version
 

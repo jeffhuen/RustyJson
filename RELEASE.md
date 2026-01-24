@@ -7,7 +7,7 @@
 5. Wait for builds → draft release created
 6. Generate checksums: `mix rustler_precompiled.download RustyJson --all --print`
 7. Commit and push checksums: `git add checksum-Elixir.RustyJson.exs && git commit -m "Add vx.y.z checksums" && git push`
-8. Publish draft release on GitHub: `gh release edit vx.y.z --draft=false`
+8. Publish draft release on GitHub
 9. Create and push tag: `git tag vx.y.z && git push origin vx.y.z`
 10. Publish to Hex: `mix hex.publish`
 
