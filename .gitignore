@@ -36,3 +36,7 @@ native/rustyjson/target/
 
 # macOS
 .DS_Store
+
+# Benchmark data and output (large files)
+/bench/data/
+/bench/output/
