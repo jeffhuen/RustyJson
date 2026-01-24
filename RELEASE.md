@@ -1,32 +1,45 @@
 # Release Process for RustyJson
 
-1. Update version in `mix.exs` and `CHANGELOG.md`
-2. Commit: `git commit -am "Bump version to x.y.z"`
-3. Push to main
-4. Trigger NIF build: `gh workflow run release.yml --field version=x.y.z`
-5. Wait for builds → draft release created
-6. Generate checksums: `mix rustler_precompiled.download RustyJson --all --print`
-7. Commit and push checksums: `git add checksum-Elixir.RustyJson.exs && git commit -m "Add vx.y.z checksums" && git push`
-8. Publish draft release on GitHub
-9. Create and push tag: `git tag vx.y.z && git push origin vx.y.z`
-10. Publish to Hex: `mix hex.publish`
+## Steps
 
-## Notes
+1. Update version in `mix.exs` and `native/rustyjson/Cargo.toml`
+2. Update `CHANGELOG.md`
+3. Commit: `git commit -am "Bump version to x.y.z"`
+4. Push to main: `git push origin main`
+5. Trigger NIF build: `gh workflow run release.yml --field version=x.y.z`
+6. **Wait for ALL 30 builds to complete** (~5-10 min)
+   ```bash
+   gh run watch <run-id>
+   ```
+7. Verify draft release has 30 assets:
+   ```bash
+   gh release view vx.y.z --json assets --jq '.assets | length'
+   ```
+8. Generate checksums: `mix rustler_precompiled.download RustyJson --all --print`
+9. Commit checksums: `git add checksum-Elixir.RustyJson.exs && git commit -m "Add vx.y.z checksums" && git push`
+10. Publish draft release: `gh release edit vx.y.z --draft=false`
+11. Create and push tag: `git tag vx.y.z && git push origin vx.y.z`
+12. Publish to Hex: `mix hex.publish`
 
-- Step 4 verifies that input version matches `mix.exs`, so steps 1-3 must happen first
-- Step 5 creates a **draft** release with all NIF binaries attached
-- Step 9 triggers another workflow run, but the release already exists so it just updates it
+## Important Notes
 
-## Useful commands
+- **Do NOT publish the draft release (step 10) until ALL 30 jobs complete and assets are attached**
+- The workflow creates a draft release - each job attaches its asset to this draft
+- Publishing too early causes a race condition where later jobs fail to attach their assets
+- Step 7 verifies all assets are present before proceeding
+
+## Useful Commands
 
 ```bash
 # Monitor build progress
 gh run list --workflow=release.yml
 gh run watch <run-id>
 
-# Check draft release
-gh release view vx.y.z
+# Check draft release assets
+gh release view vx.y.z --json assets --jq '.assets | length'  # Should be 30
+gh release view vx.y.z --json assets --jq '.assets[].name'
 
-# Publish draft release
-gh release edit vx.y.z --draft=false
+# If something goes wrong, delete and retry
+gh release delete vx.y.z --yes
+gh workflow run release.yml --field version=x.y.z
 ```
