@@ -1,0 +1,90 @@
+defmodule RustyJson.MixProject do
+  use Mix.Project
+
+  @version "0.1.0"
+
+  def project do
+    [
+      app: :rustyjson,
+      version: @version,
+      elixir: "~> 1.12",
+      start_permanent: Mix.env() == :prod,
+      consolidate_protocols: Mix.env() != :test,
+      deps: deps(),
+      description: description(),
+      package: package(),
+      docs: docs(),
+      source_url: "https://github.com/jeffhuen/rustyjson",
+      dialyzer: dialyzer()
+    ]
+  end
+
+  def application do
+    [
+      extra_applications: [:logger]
+    ]
+  end
+
+  defp deps do
+    [
+      {:rustler_precompiled, "~> 0.8"},
+      {:rustler, "~> 0.37.0", optional: true, runtime: false},
+      {:jason, "~> 1.4"},
+      {:decimal, "~> 2.0", optional: true},
+      {:ex_doc, "~> 0.30", only: :dev, runtime: false},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
+    ]
+  end
+
+  defp dialyzer do
+    [
+      plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
+      plt_add_apps: [:jason, :decimal],
+      flags: [
+        :unmatched_returns,
+        :error_handling,
+        :no_opaque,
+        :unknown,
+        :no_return
+      ]
+    ]
+  end
+
+  defp description() do
+    """
+    A high-performance JSON library for Elixir, powered by Rust NIFs.
+    3-5x faster encoding than Jason with full spec compliance.
+    """
+  end
+
+  defp package() do
+    [
+      maintainers: ["Jeff Huen"],
+      licenses: ["MIT"],
+      links: %{"GitHub" => "https://github.com/jeffhuen/rustyjson"},
+      files: [
+        "lib",
+        "mix.exs",
+        "README*",
+        "native/rustyjson/src",
+        "native/rustyjson/.cargo",
+        "native/rustyjson/Cargo*",
+        "checksum-*.exs"
+      ]
+    ]
+  end
+
+  defp docs() do
+    [
+      main: "readme",
+      name: "RustyJson",
+      source_ref: "v#{@version}",
+      canonical: "http://hexdocs.pm/rustyjson",
+      source_url: "https://github.com/jeffhuen/rustyjson",
+      extras: [
+        "README.md"
+      ]
+    ]
+  end
+end

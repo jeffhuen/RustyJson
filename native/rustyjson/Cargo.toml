@@ -1,0 +1,29 @@
+[package]
+name = "rustyjson"
+version = "0.1.0"
+authors = ["Jeff Huen"]
+edition = "2021"
+
+[lib]
+name = "rustyjson"
+path = "src/lib.rs"
+crate-type = ["dylib"]
+
+[dependencies]
+flate2 = "1.0"
+rustler = { version = "0.37", features = ["big_integer"] }
+serde = "1.0"
+lazy_static = "1.0"
+itoa = "1.0"
+ryu = "1.0"
+lexical-core = "1.0"
+num-bigint = "0.4"
+mimalloc = { version = "0.1", default-features = false, optional = true }
+tikv-jemallocator = { version = "0.6", optional = true }
+snmalloc-rs = { version = "0.3", optional = true }
+
+[features]
+default = ["mimalloc"]
+mimalloc = ["dep:mimalloc"]
+jemalloc = ["dep:tikv-jemallocator"]
+snmalloc = ["dep:snmalloc-rs"]
