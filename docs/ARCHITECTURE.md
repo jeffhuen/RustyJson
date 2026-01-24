@@ -282,28 +282,8 @@ RustyJson.Encoder.encode/1
 When `protocol: true`:
 1. Elixir's protocol system preprocesses the data
 2. Custom `RustyJson.Encoder` implementations are called
-3. Falls back to `Jason.Encoder` if available (via `RustyJson.Compat.Jason`)
+3. Structs without implementations are converted via `Map.from_struct()`
 4. Preprocessed data is sent to Rust
-
-### Jason Compatibility Layer
-
-```
-Struct with @derive Jason.Encoder
-        │
-        ▼
-RustyJson.Encoder.Any.encode/1
-        │
-        ▼
-Check: Jason.Encoder.impl_for(struct)
-        │
-        ├─► Found: Call Jason.encode_to_iodata!/1
-        │           Wrap in RustyJson.Fragment
-        │
-        └─► Not found: Map.from_struct()
-                       Recurse
-```
-
-This allows existing `@derive Jason.Encoder` code to work without changes.
 
 ## Decoding Architecture
 
@@ -380,7 +360,7 @@ This is critical for:
 
 2. **Explicit opt-in**: Users consciously trade performance for flexibility.
 
-3. **Jason compatibility**: The protocol layer enables `Jason.Encoder` fallback.
+3. **Custom encoding**: Supports `@derive RustyJson.Encoder` for struct field filtering.
 
 ### Why 128-Level Depth Limit?
 

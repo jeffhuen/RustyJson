@@ -29,7 +29,6 @@ defmodule RustyJson.MixProject do
     [
       {:rustler_precompiled, "~> 0.8"},
       {:rustler, "~> 0.37.0", optional: true, runtime: false},
-      {:jason, "~> 1.4"},
       {:decimal, "~> 2.0", optional: true},
       {:ex_doc, "~> 0.30", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
@@ -40,7 +39,7 @@ defmodule RustyJson.MixProject do
   defp dialyzer do
     [
       plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
-      plt_add_apps: [:jason, :decimal],
+      plt_add_apps: [:decimal],
       flags: [
         :unmatched_returns,
         :error_handling,
@@ -67,6 +66,8 @@ defmodule RustyJson.MixProject do
         "lib",
         "mix.exs",
         "README*",
+        "LICENSE",
+        "docs",
         "native/rustyjson/src",
         "native/rustyjson/.cargo",
         "native/rustyjson/Cargo*",
@@ -83,7 +84,9 @@ defmodule RustyJson.MixProject do
       canonical: "http://hexdocs.pm/rustyjson",
       source_url: "https://github.com/jeffhuen/rustyjson",
       extras: [
-        "README.md"
+        "README.md",
+        "LICENSE",
+        "docs/ARCHITECTURE.md"
       ]
     ]
   end

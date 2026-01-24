@@ -51,24 +51,40 @@ RustyJson.decode!(json, keys: :atoms)
 config :phoenix, :json_library, RustyJson
 ```
 
-## Jason Compatibility (Enterprise Features)
+## Migrating from Jason
 
-RustyJson is designed as a drop-in replacement for Jason, including support for enterprise patterns:
+Find/replace `Jason` → `RustyJson` in your codebase:
 
-1. **Automatic Jason.Encoder Support**: If your structs already `@derive Jason.Encoder`, RustyJson will use that implementation automatically when `protocol: true` is set. No code changes required!
+```elixir
+# Before
+@derive {Jason.Encoder, only: [:name, :email]}
+Jason.encode!(data)
+Jason.Fragment.new(json)
 
-2. **Fragments**: Full support for `Jason.Fragment` and `RustyJson.Fragment`.
-   ```elixir
-   # Inject pre-encoded JSON directly
-   fragment = RustyJson.Fragment.new(~s({"pre":"encoded"}))
-   RustyJson.encode!(%{data: fragment})
-   # => {"data":{"pre":"encoded"}}
-   ```
+# After
+@derive {RustyJson.Encoder, only: [:name, :email]}
+RustyJson.encode!(data)
+RustyJson.Fragment.new(json)
+```
 
-3. **Formatter**: Includes `RustyJson.Formatter` compatible with `Jason.Formatter`.
-   ```elixir
-   RustyJson.Formatter.pretty_print(json_string)
-   ```
+### Fragments
+
+Inject pre-encoded JSON directly:
+
+```elixir
+fragment = RustyJson.Fragment.new(~s({"pre":"encoded"}))
+RustyJson.encode!(%{data: fragment})
+# => {"data":{"pre":"encoded"}}
+```
+
+### Formatter
+
+Pretty-print or minify JSON strings:
+
+```elixir
+RustyJson.Formatter.pretty_print(json_string)
+RustyJson.Formatter.minify(json_string)
+```
 
 ## Benchmarks
 

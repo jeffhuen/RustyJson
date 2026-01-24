@@ -113,10 +113,6 @@ end
 defimpl RustyJson.Encoder, for: Any do
   @moduledoc false
 
-  # Delegate to RustyJson.Compat.Jason for Jason compatibility.
-  # See that module for documentation on performance implications.
-  alias RustyJson.Compat.Jason, as: JasonCompat
-
   defmacro __deriving__(module, _struct, opts) do
     fields = fields_to_encode(opts)
 
@@ -147,20 +143,10 @@ defimpl RustyJson.Encoder, for: Any do
     end
   end
 
-  def encode(%{__struct__: Jason.Fragment} = fragment) do
-    # Jason.Fragment compatibility - see RustyJson.Compat.Jason
-    JasonCompat.convert_fragment(fragment)
-  end
-
   def encode(%{__struct__: _module} = struct) do
-    # Check for Jason.Encoder fallback - see RustyJson.Compat.Jason
-    if JasonCompat.encoder_available?(struct) do
-      JasonCompat.encode_with_jason(struct)
-    else
-      struct
-      |> Map.from_struct()
-      |> RustyJson.Encoder.encode()
-    end
+    struct
+    |> Map.from_struct()
+    |> RustyJson.Encoder.encode()
   end
 
   def encode(value), do: value

@@ -2,9 +2,6 @@ defmodule RustyJson.Fragment do
   @moduledoc """
   Represents pre-encoded JSON that should be injected directly into output.
 
-  This is compatible with `Jason.Fragment` - if you have existing code using
-  Jason.Fragment, RustyJson will handle it correctly.
-
   ## Usage
 
       # Pre-encode some JSON
