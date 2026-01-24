@@ -20,74 +20,139 @@ Benchmarks comparing RustyJson vs Jason using real-world datasets from [nativejs
 | canada.json | 2.1 MB | Geographic coordinates (number-heavy) |
 | citm_catalog.json | 1.6 MB | Event catalog (mixed types) |
 | twitter.json | 617 KB | Social media with CJK (unicode-heavy) |
-| large_list | 2.3 MB | 50,000 items (generated) |
-| deep_nested | 1.1 KB | 100 levels deep (generated) |
-| wide_object | 75 KB | 5,000 keys (generated) |
 
 ## Results Summary
 
-### Decode Performance
+### Speed Performance
 
-| Input | RustyJson | Jason | Speedup | Memory Reduction |
-|-------|-----------|-------|---------|------------------|
-| canada.json (2.1MB) | 8.51 ms | 29.42 ms | **3.5x faster** | **7,274x less** |
-| citm_catalog.json (1.6MB) | 2.85 ms | 9.39 ms | **3.3x faster** | **2,794x less** |
-| twitter.json (617KB) | 1.91 ms | 4.53 ms | **2.4x faster** | **1,198x less** |
-| large_list (50k items) | 15.81 ms | 35.78 ms | **2.3x faster** | **13,974x less** |
-| deep_nested (100 levels) | 7.89 μs | 7.23 μs | 1.1x slower | **10x less** |
-| wide_object (5k keys) | 0.59 ms | 1.24 ms | **2.1x faster** | **403x less** |
+| Input | RustyJson | Jason | Speedup |
+|-------|-----------|-------|---------|
+| canada.json (2.1MB) | 14 ms | 48 ms | **3.4x faster** |
+| citm_catalog.json (1.6MB) | 6 ms | 14 ms | **2.5x faster** |
+| twitter.json (617KB) | 4 ms | 9 ms | **2.3x faster** |
 
-### Encode Performance
+### Memory Performance
 
-| Input | RustyJson | Jason | Speedup | Memory Reduction |
-|-------|-----------|-------|---------|------------------|
-| canada (2.1MB) | 4.41 ms | 12.95 ms | **2.9x faster** | **52,567x less** |
-| citm_catalog (1.6MB) | 2.08 ms | 4.27 ms | **2.1x faster** | **27,382x less** |
-| twitter (617KB) | 1.21 ms | 3.53 ms | **2.9x faster** | **14,495x less** |
-| large_list (50k items) | 12.02 ms | 27.99 ms | **2.3x faster** | **169,566x less** |
-| deep_nested (100 levels) | 10.65 μs | 10.63 μs | 1.0x (same) | **88x less** |
-| wide_object (5k keys) | 282.48 μs | 691.03 μs | **2.4x faster** | **4,785x less** |
+| Input | RustyJson | Jason | Reduction |
+|-------|-----------|-------|-----------|
+| canada.json (2.1MB) | 2.4 MB | 5.8 MB | **2-3x less** |
+| citm_catalog.json (1.6MB) | 0.5 MB | 2.1 MB | **3-4x less** |
+| twitter.json (617KB) | ~0.7 MB | ~0.7 MB | similar |
 
-### Roundtrip Performance (Decode + Encode)
-
-| Input | RustyJson | Jason | Speedup | Memory Reduction |
-|-------|-----------|-------|---------|------------------|
-| canada.json (2.1MB) | 13.81 ms | 47.71 ms | **3.5x faster** | **11,967x less** |
-| citm_catalog.json (1.6MB) | 5.63 ms | 14.00 ms | **2.5x faster** | **5,378x less** |
-| twitter.json (617KB) | 3.87 ms | 8.85 ms | **2.3x faster** | **2,581x less** |
+*Memory measured via `:erlang.memory(:total)` delta in isolated processes. See methodology below.*
 
 ## Key Findings
 
-1. **Consistent speedup**: RustyJson is 2-3.5x faster than Jason across all real-world datasets.
+1. **Consistent speedup**: RustyJson is **2-3x faster** than Jason across all operations.
 
-2. **Dramatic memory reduction**: RustyJson uses 1,000x to 170,000x less memory during encoding. This is due to RustyJson writing directly to a single Rust buffer vs Jason creating many intermediate BEAM binaries.
+2. **Encode memory efficiency**: RustyJson uses **2-4x less BEAM memory** for encoding larger payloads because it returns a single binary instead of an iolist.
 
-3. **Small payload overhead**: For tiny payloads (< 1KB), NIF call overhead makes RustyJson roughly equivalent to Jason. This is expected and acceptable.
+3. **Decode memory**: Similar to Jason - both produce identical Elixir data structures.
 
-4. **Best for**: Medium to large JSON payloads (1KB - 100MB+), high-throughput APIs, memory-constrained environments.
+4. **Best for**: Medium to large JSON payloads (1KB+), high-throughput APIs, latency-sensitive applications.
+
+## Why Benchee Memory Measurements Don't Work for NIFs
+
+**Important**: Benchee's memory measurement feature does not work correctly for NIF-based libraries like RustyJson.
+
+### What Benchee Reports (Incorrect)
+
+When running Benchee with `memory_time: 2`, you may see results like:
+
+| Library | Memory |
+|---------|--------|
+| RustyJson | 0.00169 MB |
+| Jason | 20.27 MB |
+
+This suggests RustyJson uses **12,000x less memory** - which is wrong.
+
+### Why This Happens
+
+Benchee measures memory using BEAM introspection (`:erlang.memory/0`). This only tracks:
+- BEAM process heap allocations
+- BEAM binary allocations
+- ETS table memory
+
+RustyJson allocates memory in **Rust via mimalloc**, which is completely invisible to BEAM's memory tracking. The 0.00169 MB Benchee reports is just the overhead of the NIF call itself, not the actual memory used.
+
+### Can Benchee Be Fixed?
+
+No, there's no way to make Benchee measure NIF memory correctly because:
+
+1. **NIF memory is off-heap**: Rust's allocator (mimalloc) manages its own memory pool outside the BEAM
+2. **No BEAM visibility**: `:erlang.memory/0` cannot see native allocations
+3. **Cross-runtime barrier**: The BEAM has no mechanism to query memory from embedded native code
+
+To properly measure NIF memory, you would need:
+- System-level memory tracking (RSS before/after)
+- Custom allocator instrumentation in the Rust code
+- External profiling tools like Instruments or Valgrind
+
+### What We Actually Measured
+
+We use `:erlang.memory(:total)` delta in isolated processes, which captures:
+- All BEAM allocations during the operation
+- The final binary/data structure retained
+
+This gives a fair comparison of BEAM-side memory impact, though it still doesn't capture temporary Rust allocations (which are freed immediately when the NIF returns).
+
+## Understanding the Memory Difference
+
+### Why RustyJson Uses Less Memory for Encoding
+
+**Jason's allocation pattern:**
+```
+encode(data)
+  → allocate "{" binary
+  → allocate "\"key\"" binary
+  → allocate ":" binary
+  → allocate "\"value\"" binary
+  → allocate list cells to link them
+  → return iolist (many small BEAM allocations)
+```
+
+**RustyJson's allocation pattern:**
+```
+encode(data)
+  → [Rust: allocate buffer, write JSON, free buffer]
+  → copy to single BEAM binary
+  → return binary (one BEAM allocation)
+```
+
+Jason creates many small allocations that cause GC pressure. RustyJson creates one allocation.
+
+### BEAM Work Comparison
+
+```elixir
+# Reductions (BEAM work units) for encoding canada.json:
+RustyJson.encode!(data)  # 322 reductions
+Jason.encode!(data)      # 962,398 reductions (3000x more!)
+```
+
+The real benefit of RustyJson is **reduced BEAM scheduler load** - all the heavy lifting happens in native code.
 
 ## Running Benchmarks
 
-To run these benchmarks yourself:
-
 ```bash
-# 1. Add benchmark dependencies to mix.exs (dev only)
-# {:benchee, "~> 1.0", only: :dev},
-# {:benchee_html, "~> 1.0", only: :dev},
-# {:benchee_markdown, "~> 0.3", only: :dev}
-
-# 2. Fetch dependencies
-mix deps.get
-
-# 3. Download test data
+# 1. Download test data
 mkdir -p bench/data && cd bench/data
 curl -LO https://raw.githubusercontent.com/miloyip/nativejson-benchmark/master/data/canada.json
 curl -LO https://raw.githubusercontent.com/miloyip/nativejson-benchmark/master/data/citm_catalog.json
 curl -LO https://raw.githubusercontent.com/miloyip/nativejson-benchmark/master/data/twitter.json
 cd ../..
 
-# 4. Run benchmarks
+# 2. Run memory benchmarks (no extra deps needed)
+mix run bench/memory_bench.exs
+
+# 3. (Optional) Run speed benchmarks with Benchee
+# Add to mix.exs: {:benchee, "~> 1.0", only: :dev}
+mix deps.get
 mix run bench/stress_bench.exs
 ```
 
-Results will be output to the console and saved to `bench/output/` (HTML and Markdown formats).
+## Methodology Notes
+
+- **Speed**: Benchee with `warmup: 2s, time: 5s` - reliable and accurate
+- **Memory**: `:erlang.memory(:total)` delta in isolated spawned processes
+- **Do NOT use**: Benchee's `memory_time` option for NIF comparisons (gives misleading results)
+- Results may vary by ±10-20% across runs due to GC timing

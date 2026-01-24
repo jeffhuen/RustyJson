@@ -9,10 +9,11 @@ A JSON library for Elixir powered by Rust NIFs, designed as a drop-in replacemen
 **Why not existing Rust JSON NIFs?** After OTP 24, Erlang's binary handling improved significantly, closing the performance gap between NIFs and pure-Elixir implementations. Libraries like [jiffy](https://github.com/davisp/jiffy) and the original [jsonrs](https://github.com/benhaney/jsonrs) struggled to outperform Jason on modern BEAM versions. Additionally, the original jsonrs is incompatible with Rustler 0.37+, which is required by many other packages.
 
 **RustyJson's approach**: Rather than trying to beat Jason on speed alone, RustyJson focuses on:
-1. **Dramatically lower memory usage** during encoding (10-20x reduction for large payloads)
-2. **Competitive encoding speed** (3-6x faster for medium/large data)
-3. **Full Jason API compatibility** as a true drop-in replacement
-4. **Modern Rustler 0.37+ support** for compatibility with the ecosystem
+1. **Lower memory usage** during encoding (2-4x less BEAM memory for large payloads)
+2. **Reduced BEAM scheduler load** (3000x fewer reductions - work happens in native code)
+3. **Faster encoding/decoding** (2-3x faster for medium/large data)
+4. **Full Jason API compatibility** as a true drop-in replacement
+5. **Modern Rustler 0.37+ support** for compatibility with the ecosystem
 
 ## Installation
 
@@ -90,37 +91,34 @@ RustyJson.Formatter.minify(json_string)
 
 All benchmarks run on Apple Silicon M1. Results may vary on other architectures.
 
-### Synthetic Benchmarks
+### Speed (Roundtrip)
 
-| Payload | Encoding | Decoding |
-|---------|----------|----------|
-| Small (~25 bytes) | ~1x | 1.3x faster |
-| Medium (~7 KB) | **3-6x faster** | **2x faster** |
-| Large (~500 KB) | **3-4x faster** | 1.2x faster |
+Using datasets from [nativejson-benchmark](https://github.com/miloyip/nativejson-benchmark):
 
-*Note: Small payloads show minimal difference due to NIF call overhead.*
+| Dataset | RustyJson | Jason | Speedup |
+|---------|-----------|-------|---------|
+| canada.json (2.1MB) | 14 ms | 48 ms | **3.4x faster** |
+| citm_catalog.json (1.6MB) | 6 ms | 14 ms | **2.5x faster** |
+| twitter.json (617KB) | 4 ms | 9 ms | **2.3x faster** |
 
-### Real-World Benchmark: Amazon Settlement Reports
+### Memory (Encoding)
 
-Processing 31 settlement reports (TSV → parsed data → JSON files) with reports containing 4 to 15,820 rows each:
+| Dataset | RustyJson | Jason | Reduction |
+|---------|-----------|-------|-----------|
+| canada.json (2.1MB) | 2.4 MB | 5.8 MB | **2-3x less** |
+| citm_catalog.json (1.6MB) | 0.5 MB | 2.1 MB | **3-4x less** |
 
-**Example: 13,073-row report (2.1 MB download)**
+### BEAM Scheduler Load
 
-| Metric | Jason | RustyJson | Improvement |
-|--------|-------|-----------|-------------|
-| Save JSON time | 1,556 ms | 70 ms | **22x faster** |
-| Memory (Save JSON) | +146.8 MB | +6.7 MB | **22x less** |
-| Total memory | +162.3 MB | +22.4 MB | **7x less** |
+```elixir
+# Reductions (BEAM work units) for encoding canada.json:
+RustyJson.encode!(data)  # 322 reductions
+Jason.encode!(data)      # 962,398 reductions (3000x less!)
+```
 
-**Example: 10,961-row report (1.82 MB download)**
+The real benefit is **reduced BEAM scheduler load** - JSON processing happens in native code, freeing your schedulers for other work.
 
-| Metric | Jason | RustyJson | Improvement |
-|--------|-------|-----------|-------------|
-| Save JSON time | 1,317 ms | 51 ms | **26x faster** |
-| Memory (Save JSON) | +149.0 MB | +16 KB | **9,300x less** |
-| Total memory | +161.9 MB | +21.9 MB | **7x less** |
-
-The memory difference is most dramatic during the encoding step itself, where RustyJson avoids the intermediate allocations that Jason requires.
+*Note: Small payloads (<1KB) show minimal difference due to NIF call overhead. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for detailed methodology.*
 
 ## Features
 
@@ -178,14 +176,13 @@ end
 
 ## JSON Spec Compliance
 
-RustyJson passes 72+ tests covering full JSON spec compliance:
+RustyJson is fully compliant with RFC 8259 and passes **283/283 mandatory tests** from [JSONTestSuite](https://github.com/nst/JSONTestSuite):
 
-- Primitives: `null`, `true`, `false`
-- Numbers: integers, floats, exponents, large numbers
-- Strings: Unicode, escape sequences, surrogate pairs (emoji)
-- Arrays and objects: nested, mixed types, duplicate keys (last wins)
-- Error handling: rejects trailing commas, single quotes, unquoted keys
-- Nesting depth: 128-level maximum per RFC 7159
+- **95/95** `y_` tests (must accept)
+- **188/188** `n_` tests (must reject)
+- Rejects lone surrogates per [RFC 7493 I-JSON](https://datatracker.ietf.org/doc/html/rfc7493)
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed compliance information.
 
 ## How It Works
 
