@@ -15,18 +15,22 @@
    ```bash
    gh release view vx.y.z --json assets --jq '.assets | length'
    ```
-8. Generate checksums: `mix rustler_precompiled.download RustyJson --all --print`
-9. Commit checksums: `git add checksum-Elixir.RustyJson.exs && git commit -m "Add vx.y.z checksums" && git push`
-10. Publish draft release: `gh release edit vx.y.z --draft=false`
-11. Create and push tag: `git tag vx.y.z && git push origin vx.y.z`
-12. Publish to Hex: `mix hex.publish`
+8. Publish draft release (assets must be public before checksums can be generated):
+   ```bash
+   gh release edit vx.y.z --draft=false
+   ```
+9. Generate checksums: `mix rustler_precompiled.download RustyJson --all --print`
+10. Commit checksums: `git add checksum-Elixir.RustyJson.exs && git commit -m "Add vx.y.z checksums" && git push`
+11. Publish to Hex: `mix hex.publish`
 
 ## Important Notes
 
-- **Do NOT publish the draft release (step 10) until ALL 30 jobs complete and assets are attached**
+- **Do NOT publish the draft release (step 8) until ALL 30 jobs complete and assets are attached**
 - The workflow creates a draft release - each job attaches its asset to this draft
 - Publishing too early causes a race condition where later jobs fail to attach their assets
 - Step 7 verifies all assets are present before proceeding
+- Draft release assets are not publicly accessible, so the release must be published before generating checksums
+- Publishing the release automatically creates the git tag (no need to create it manually)
 
 ## Useful Commands
 
