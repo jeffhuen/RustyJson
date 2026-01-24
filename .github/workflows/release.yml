@@ -8,6 +8,9 @@ on:
     tags:
       - '*'
 
+permissions:
+  contents: write
+
 defaults:
   run:
     working-directory: "./native/rustyjson"

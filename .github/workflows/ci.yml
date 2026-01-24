@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [ "master" ]
+    branches: [ "main" ]
 
 env:
   CARGO_TERM_COLOR: always
@@ -56,5 +56,7 @@ jobs:
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
     - name: Install dependencies
       run: mix deps.get
+    - name: Check formatting
+      run: mix format --check-formatted && cargo fmt --check --manifest-path native/rustyjson/Cargo.toml
     - name: Run tests
       run: mix test

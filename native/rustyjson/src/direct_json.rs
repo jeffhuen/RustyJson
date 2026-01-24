@@ -491,7 +491,10 @@ fn try_format_special_struct<W: Write>(
 }
 
 /// Format pre-encoded JSON fragment
-fn try_format_fragment<W: Write>(term: &Term, writer: &mut W) -> Result<Option<()>, std::io::Error> {
+fn try_format_fragment<W: Write>(
+    term: &Term,
+    writer: &mut W,
+) -> Result<Option<()>, std::io::Error> {
     let env = term.get_env();
     let t = *term;
 

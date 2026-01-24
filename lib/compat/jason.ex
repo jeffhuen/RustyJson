@@ -102,7 +102,6 @@ defmodule RustyJson.Compat.Jason do
   def encoder_available?(struct) when is_struct(struct) do
     if Code.ensure_loaded?(Jason.Encoder) and function_exported?(Jason.Encoder, :impl_for, 1) do
       case Jason.Encoder.impl_for(struct) do
-        nil -> false
         Jason.Encoder.Any -> false
         impl -> function_exported?(impl, :encode, 2)
       end
@@ -148,7 +147,8 @@ defmodule RustyJson.Compat.Jason do
 
   """
   @spec convert_fragment(struct()) :: RustyJson.Fragment.t()
-  def convert_fragment(%{__struct__: Jason.Fragment, encode: encode}) when is_function(encode, 1) do
+  def convert_fragment(%{__struct__: Jason.Fragment, encode: encode})
+      when is_function(encode, 1) do
     %RustyJson.Fragment{encode: encode.(nil)}
   end
 
