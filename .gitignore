@@ -32,3 +32,6 @@ checksum-*.exs
 
 # Dialyzer PLT files
 /priv/plts/
+
+# Claude Code
+.claude/
