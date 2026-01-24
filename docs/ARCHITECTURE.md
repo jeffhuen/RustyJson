@@ -437,6 +437,12 @@ RustyJson has been validated against the comprehensive [JSONTestSuite](https://g
 
 **Total mandatory compliance: 283/283 (100%)**
 
+RustyJson also passes the [nativejson-benchmark](https://github.com/miloyip/nativejson-benchmark) conformance tests:
+- Parse Validation (JSON_checker test suite)
+- Parse Double (66 decimal precision tests)
+- Parse String (9 string tests)
+- Roundtrip (27 JSON roundtrip tests)
+
 ### Implementation-Defined Behavior
 
 For the 35 implementation-defined tests, RustyJson makes these choices:
@@ -479,4 +485,5 @@ For the 35 implementation-defined tests, RustyJson makes these choices:
 - [RFC 7493](https://tools.ietf.org/html/rfc7493) - The I-JSON Message Format (Internet JSON profile)
 - [ECMA-404](https://www.ecma-international.org/publications-and-standards/standards/ecma-404/) - The JSON Data Interchange Syntax
 - [JSONTestSuite](https://github.com/nst/JSONTestSuite) - Comprehensive JSON parser test suite
+- [nativejson-benchmark](https://github.com/miloyip/nativejson-benchmark) - JSON conformance and performance benchmark
 - [mimalloc](https://github.com/microsoft/mimalloc) - Memory allocator
