@@ -7,7 +7,7 @@ edition = "2021"
 [lib]
 name = "rustyjson"
 path = "src/lib.rs"
-crate-type = ["dylib"]
+crate-type = ["cdylib"]
 
 [dependencies]
 flate2 = "1.0"
@@ -27,3 +27,7 @@ default = ["mimalloc"]
 mimalloc = ["dep:mimalloc"]
 jemalloc = ["dep:tikv-jemallocator"]
 snmalloc = ["dep:snmalloc-rs"]
+# NIF version features for rustler_precompiled (OTP 24+ = 2.15, OTP 26 = 2.16, OTP 27+ = 2.17)
+nif_version_2_15 = ["rustler/nif_version_2_15"]
+nif_version_2_16 = ["rustler/nif_version_2_16"]
+nif_version_2_17 = ["rustler/nif_version_2_17"]
