@@ -89,36 +89,42 @@ RustyJson.Formatter.minify(json_string)
 
 ## Benchmarks
 
-All benchmarks run on Apple Silicon M1. Results may vary on other architectures.
+All benchmarks on Apple Silicon M1. RustyJson's advantage grows with payload size.
 
-### Speed (Roundtrip)
+### Encoding (Elixir → JSON) — Where RustyJson Shines
 
-Using datasets from [nativejson-benchmark](https://github.com/miloyip/nativejson-benchmark):
+| Dataset | RustyJson | Jason | Speed | Memory |
+|---------|-----------|-------|-------|--------|
+| Settlement report (10 MB) | 24 ms | 131 ms | **5.5x faster** | **2-3x less** |
+| canada.json (2.1 MB) | 6 ms | 18 ms | **3x faster** | **2-3x less** |
+| twitter.json (617 KB) | 1.2 ms | 3.5 ms | **2.9x faster** | similar |
 
-| Dataset | RustyJson | Jason | Speedup |
-|---------|-----------|-------|---------|
-| canada.json (2.1MB) | 14 ms | 48 ms | **3.4x faster** |
-| citm_catalog.json (1.6MB) | 6 ms | 14 ms | **2.5x faster** |
-| twitter.json (617KB) | 4 ms | 9 ms | **2.3x faster** |
+### Decoding (JSON → Elixir)
 
-### Memory (Encoding)
+| Dataset | RustyJson | Jason | Speed |
+|---------|-----------|-------|-------|
+| Settlement report (10 MB) | 61 ms | 152 ms | **2.5x faster** |
+| canada.json (2.1 MB) | 8 ms | 29 ms | **3.5x faster** |
 
-| Dataset | RustyJson | Jason | Reduction |
-|---------|-----------|-------|-----------|
-| canada.json (2.1MB) | 2.4 MB | 5.8 MB | **2-3x less** |
-| citm_catalog.json (1.6MB) | 0.5 MB | 2.1 MB | **3-4x less** |
+Both libraries produce identical Elixir data structures, so memory usage is similar for decoding.
 
 ### BEAM Scheduler Load
 
 ```elixir
-# Reductions (BEAM work units) for encoding canada.json:
-RustyJson.encode!(data)  # ~3,500 reductions
-Jason.encode!(data)      # ~964,000 reductions (275x fewer!)
+# Reductions (BEAM work units) for encoding 10 MB settlement report:
+RustyJson.encode!(data)  # 404 reductions
+Jason.encode!(data)      # 11,570,847 reductions (28,000x fewer!)
 ```
 
-The real benefit is **reduced BEAM scheduler load** (100-2000x fewer reductions depending on payload) - JSON processing happens in native code, freeing your schedulers for other work.
+The real benefit is **reduced BEAM scheduler load** - JSON processing happens in native code, freeing your schedulers for other work.
 
-*Note: Small payloads (<1KB) show minimal difference due to NIF call overhead. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for detailed methodology.*
+### When to Use RustyJson
+
+- **Best for**: Large payloads (1MB+), API responses, data exports
+- **Equal to Jason**: Small payloads (<1KB) due to NIF call overhead
+- **Biggest wins**: Encoding large, complex data structures
+
+See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for detailed methodology.
 
 ## Features
 
@@ -220,12 +226,12 @@ default = ["mimalloc"]
 
 ### What We Learned
 
-The bottleneck for JSON NIFs isn't parsing or formatting—it's crossing the NIF boundary and building Erlang terms. SIMD-accelerated parsers like simd-json and sonic-rs showed minimal improvement because term construction dominates the workload.
+The bottleneck for JSON NIFs isn't parsing—it's building Erlang terms. SIMD-accelerated parsers like simd-json and sonic-rs actually performed **worse** because they use serde, requiring double conversion (JSON → Rust types → BEAM terms).
 
 The wins come from:
-1. **Avoiding intermediate allocations** (no Rust structs, no serde)
-2. **Efficient term building** (direct writes to Erlang heap)
-3. **Good memory allocator** (mimalloc reduces fragmentation)
+1. **Skipping serde entirely** - Walk JSON and build BEAM terms directly in one pass
+2. **No intermediate allocations** - No Rust structs, no AST
+3. **Good memory allocator** - mimalloc reduces fragmentation
 
 ## Limitations
 

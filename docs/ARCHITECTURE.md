@@ -4,7 +4,7 @@ This document explains the architectural decisions behind RustyJson and compares
 
 ## Overview
 
-RustyJson is a Rust NIF-based JSON library that prioritizes **memory efficiency** over theoretical purity. While Jason returns true iolists, RustyJson returns single binaries - a deliberate trade-off that yields 10-20x memory reduction during encoding.
+RustyJson is a Rust NIF-based JSON library that prioritizes **memory efficiency** over theoretical purity. While Jason returns true iolists, RustyJson returns single binaries - a deliberate trade-off that yields 2-4x memory reduction during encoding and significantly reduced BEAM scheduler load.
 
 ## Encoding Architecture
 
@@ -60,16 +60,18 @@ Return single binary
 
 ## Memory Comparison
 
-For a 10MB JSON payload:
+For a 2MB JSON payload (canada.json benchmark):
 
 | Phase | Jason | RustyJson |
 |-------|-------|-----------|
-| Input term | 10 MB | 10 MB |
-| During encoding | +140 MB (intermediate binaries) | +5 MB (Rust buffer) |
-| Peak memory | ~150 MB | ~15 MB |
-| Final output | 10 MB iolist | 10 MB binary |
+| Input term | ~6 MB | ~6 MB |
+| During encoding | +5.8 MB (iolist allocations) | +2.4 MB (single binary) |
+| BEAM reductions | ~964,000 | ~3,500 (275x fewer) |
+| Final output | 2 MB iolist | 2 MB binary |
 
-The dramatic difference comes from Jason creating many intermediate binary allocations during the recursive encoding process.
+The difference comes from Jason creating many intermediate iolist allocations during recursive encoding, while RustyJson builds a single buffer in Rust and copies once to BEAM.
+
+**Note:** Memory measurements use `:erlang.memory(:total)` delta. See [BENCHMARKS.md](BENCHMARKS.md) for methodology and why Benchee memory measurements don't work for NIFs.
 
 ## Safety Analysis
 
@@ -224,6 +226,34 @@ However, we believe these are unnecessary for RustyJson given the safety guarant
 
 ## Performance Characteristics
 
+### Encode vs Decode: Why They Differ
+
+**Encoding** is where RustyJson has the biggest advantage:
+- Jason creates many small iolist allocations on BEAM heap
+- RustyJson builds one buffer in Rust, copies once to BEAM
+- Result: 3-6x faster, 2-3x less memory, 100-28,000x fewer BEAM reductions
+
+**Decoding** shows smaller gains:
+- Both produce identical Elixir data structures (maps, lists, strings)
+- Final memory usage is similar (same data, same BEAM terms)
+- RustyJson is 2-3x faster due to optimized parsing
+- But memory advantage is minimal since output is the same
+
+### Why Larger Files Show Bigger Gains
+
+RustyJson's encoding advantage scales with payload size:
+
+| Payload Size | Speed Advantage | Memory Advantage | Reductions |
+|--------------|-----------------|------------------|------------|
+| < 1 KB | ~1x (NIF overhead) | similar | ~10x fewer |
+| 1-2 MB | 2-3x faster | 2-3x less | 200-2000x fewer |
+| 10+ MB | 5-6x faster | 2-3x less | 28,000x fewer |
+
+This is because:
+1. **NIF call overhead** is fixed (~0.1ms) regardless of payload size
+2. **Allocation overhead** grows with payload - Jason's many small allocations compound
+3. **BEAM reductions** scale linearly with work - Jason does all work in BEAM, RustyJson offloads to native code
+
 ### When Jason Wins
 
 1. **Tiny payloads (<100 bytes)**: NIF call overhead exceeds encoding time
@@ -232,19 +262,31 @@ However, we believe these are unnecessary for RustyJson given the safety guarant
 
 ### When RustyJson Wins
 
-1. **Medium payloads (1KB-1MB)**: 3-6x faster, 10-20x less memory
-2. **Large payloads (1MB+)**: Memory efficiency becomes critical
-3. **High-throughput APIs**: Less GC pressure, more consistent latency
+1. **Large payloads (1MB+)**: 5-6x faster, 2-3x less memory, 28,000x fewer reductions
+2. **Medium payloads (1KB-1MB)**: 2-3x faster, 2-3x less memory
+3. **High-throughput APIs**: Dramatically reduced BEAM scheduler load
 4. **Memory-constrained environments**: Lower peak memory usage
 
 ### Real-World Performance
 
-In production workloads (Amazon settlement reports):
+**Amazon Settlement Reports (10 MB JSON files):**
 
-| Metric | Jason | RustyJson | Improvement |
-|--------|-------|-----------|-------------|
-| Encode time (13K rows) | 1,556 ms | 70 ms | 22x faster |
-| Memory during encode | +146.8 MB | +6.7 MB | 22x less |
+| Operation | RustyJson | Jason | Speed | Memory |
+|-----------|-----------|-------|-------|--------|
+| Encode | 24 ms | 131 ms | **5.5x faster** | **2.7x less** |
+| Decode | 61 ms | 152 ms | **2.5x faster** | similar |
+
+**Synthetic benchmarks ([nativejson-benchmark](https://github.com/miloyip/nativejson-benchmark)):**
+
+| Dataset | RustyJson | Jason | Speedup |
+|---------|-----------|-------|---------|
+| canada.json (2.1MB) | 14 ms | 48 ms | 3.4x faster |
+| citm_catalog.json (1.6MB) | 6 ms | 14 ms | 2.5x faster |
+| twitter.json (617KB) | 4 ms | 9 ms | 2.3x faster |
+
+Real-world API responses show better results than synthetic benchmarks because they have more complex nested structures and mixed data types.
+
+See [BENCHMARKS.md](BENCHMARKS.md) for detailed methodology.
 
 ## Protocol Architecture
 
@@ -346,7 +388,7 @@ This is critical for:
 
 ### Why Single Binary Instead of iolist?
 
-1. **Memory efficiency**: The 10-20x memory reduction during encoding far outweighs the theoretical benefits of iolists.
+1. **Memory efficiency**: The 2-4x memory reduction and 100-2000x fewer BEAM reductions outweigh the theoretical benefits of iolists.
 
 2. **Phoenix flattens anyway**: `Plug.Conn` typically calls `IO.iodata_to_binary/1` before sending responses.
 
@@ -459,23 +501,44 @@ For the 35 implementation-defined tests, RustyJson makes these choices:
 - Byte Order Marks (BOM)
 - Nesting deeper than 128 levels
 
+## What We Learned
+
+### SIMD Is Actually Slower
+
+We tested SIMD-accelerated parsers like simd-json and sonic-rs. Result: **they performed worse than our purpose-built NIF**.
+
+Why? The bottleneck for JSON NIFs isn't parsing—it's **building Erlang terms**. SIMD libraries optimize for parsing JSON into native data structures, but for Elixir we need to:
+1. Parse JSON → intermediate Rust types (serde)
+2. Convert Rust types → BEAM terms
+3. Copy data to BEAM heap
+
+This double conversion negates SIMD's parsing speed advantage. Our approach skips the intermediate step entirely—we walk JSON bytes and build BEAM terms directly in one pass.
+
+### The Real Wins
+
+The performance gains come from:
+1. **Avoiding intermediate allocations** - No serde, no Rust structs
+2. **Direct term building** - Walk input once, write BEAM terms directly
+3. **Single output buffer** - One allocation instead of many iolist fragments
+4. **Good memory allocator** - mimalloc reduces fragmentation
+
 ## Future Considerations
 
 ### Potential Optimizations
 
-1. **SIMD parsing**: Libraries like simd-json could accelerate decoding, though term construction dominates.
+1. **Chunked output**: For 100MB+ payloads, returning iolists could reduce memory spikes.
 
-2. **Chunked output**: For 100MB+ payloads, returning iolists could reduce memory spikes.
-
-3. **Streaming decode**: Parse JSON incrementally for very large inputs.
+2. **Streaming decode**: Parse JSON incrementally for very large inputs.
 
 ### Not Planned
 
-1. **True iolist output**: The complexity isn't justified by real-world benefits.
+1. **SIMD parsing**: We tested it - SIMD libraries require an intermediate serde step, which makes them slower than our direct term-building approach.
 
-2. **Unsafe Rust**: Memory safety is non-negotiable.
+2. **True iolist output**: The complexity isn't justified by real-world benefits.
 
-3. **Custom allocators per-call**: mimalloc is fast enough globally.
+3. **Unsafe Rust**: Memory safety is non-negotiable.
+
+4. **Custom allocators per-call**: mimalloc is fast enough globally.
 
 ## References
 
