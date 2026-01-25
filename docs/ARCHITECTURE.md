@@ -522,6 +522,32 @@ The performance gains come from:
 3. **Single output buffer** - One allocation instead of many iolist fragments
 4. **Good memory allocator** - mimalloc reduces fragmentation
 
+### Why We Don't Use Dirty Schedulers
+
+BEAM documentation recommends NIFs complete in under 1 millisecond to maintain scheduler fairness. RustyJson exceeds this for large payloads (10 MB encode takes ~24ms). Dirty schedulers run NIFs on separate threads to avoid blocking normal schedulers.
+
+We benchmarked dirty schedulers and found they **hurt performance**:
+
+| Payload | Normal | Dirty | Result |
+|---------|--------|-------|--------|
+| 1 KB encode | 9 µs | 62 µs | **Dirty 7x slower** |
+| 10 KB encode | 177 µs | 136 µs | Dirty 23% faster |
+| 5 MB encode | 43 ms | 43 ms | Similar |
+
+Under concurrent load (50 processes), normal schedulers had **1.7x higher throughput** for encoding and **2.2x higher** for decoding.
+
+**Why dirty schedulers hurt**:
+1. **Migration overhead** - Process must migrate to dirty scheduler pool and back
+2. **Limited pool** - Only N dirty CPU schedulers (N = CPU cores), creating bottlenecks
+3. **Cache effects** - Different thread means cold CPU caches
+
+**Why exceeding 1ms is acceptable here**:
+1. **28,000x fewer reductions** - Work is offloaded to native code, freeing BEAM schedulers for other processes
+2. **Net scheduler impact is lower** - Jason (pure Elixir) uses the scheduler for the entire duration with high reduction counts; RustyJson uses it briefly with minimal reductions
+3. **Isolated processes** - Phoenix requests run in separate processes; one encode doesn't block others
+
+This is not a safety tradeoff—the NIF is memory-safe regardless of scheduler type. It's a practical decision: dirty schedulers add overhead without benefit.
+
 ## Future Considerations
 
 ### Potential Optimizations
