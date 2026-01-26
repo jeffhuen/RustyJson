@@ -76,7 +76,7 @@ Using standard datasets from [nativejson-benchmark](https://github.com/miloyip/n
 
 ## Why Encoding Shows Bigger Gains
 
-### Jason's Encoding Pattern
+### iolist Encoding Pattern (Pure Elixir)
 
 ```
 encode(data)
@@ -88,7 +88,7 @@ encode(data)
   → return iolist (many BEAM allocations)
 ```
 
-### RustyJson's Encoding Pattern
+### RustyJson's Encoding Pattern (NIF)
 
 ```
 encode(data)
@@ -97,7 +97,7 @@ encode(data)
   → return binary (one BEAM allocation)
 ```
 
-Jason creates many small BEAM allocations that cause GC pressure. RustyJson creates one.
+Pure-Elixir encoders create many small BEAM allocations. RustyJson creates one.
 
 ### Why Decoding Memory is Similar
 
@@ -173,6 +173,67 @@ mix deps.get
 mix run bench/stress_bench.exs
 ```
 
+## Key Interning Benchmarks
+
+The `keys: :intern` option provides significant speedups when decoding arrays of objects with repeated keys (common in API responses, database results, etc.).
+
+### When Key Interning Helps: Homogeneous Arrays
+
+Arrays where every object has the same keys:
+
+```json
+[{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}, ...]
+```
+
+| Scenario | Default | `keys: :intern` | Improvement |
+|----------|---------|-----------------|-------------|
+| 100 objects × 5 keys | 34.2 µs | 23.6 µs | **31% faster** |
+| 100 objects × 10 keys | 67.5 µs | 44.8 µs | **34% faster** |
+| 1,000 objects × 5 keys | 335 µs | 237 µs | **29% faster** |
+| 1,000 objects × 10 keys | 688 µs | 463 µs | **33% faster** |
+| 10,000 objects × 5 keys | 3.46 ms | 2.45 ms | **29% faster** |
+| 10,000 objects × 10 keys | 6.92 ms | 4.88 ms | **29% faster** |
+
+### When Key Interning Hurts: Unique Keys
+
+Single objects or heterogeneous arrays where keys aren't repeated:
+
+| Scenario | Default | `keys: :intern` | Penalty |
+|----------|---------|-----------------|---------|
+| Single object, 100 keys | 5.1 µs | 13.6 µs | **2.6x slower** |
+| Single object, 1,000 keys | 52 µs | 169 µs | **3.2x slower** |
+| Single object, 5,000 keys | 260 µs | 831 µs | **3.2x slower** |
+| Heterogeneous 100 objects | 35 µs | 96 µs | **2.7x slower** |
+| Heterogeneous 500 objects | 186 µs | 475 µs | **2.5x slower** |
+
+### Scaling: Benefit Increases with Object Count
+
+With 5 keys per object, the benefit grows as more objects reuse the cached keys:
+
+| Objects | Default | `keys: :intern` | Improvement |
+|---------|---------|-----------------|-------------|
+| 10 | 3.5 µs | 3.0 µs | 13% faster |
+| 50 | 17.1 µs | 12.5 µs | 27% faster |
+| 100 | 33.8 µs | 23.8 µs | 30% faster |
+| 500 | 170 µs | 119 µs | 30% faster |
+| 1,000 | 339 µs | 242 µs | 29% faster |
+| 5,000 | 1.81 ms | 1.24 ms | 31% faster |
+| 10,000 | 3.47 ms | 2.49 ms | 28% faster |
+
+### Usage Recommendation
+
+```elixir
+# API responses, database results, bulk data
+RustyJson.decode!(json, keys: :intern)
+
+# Config files, single objects, unknown schemas
+RustyJson.decode!(json)  # default, no interning
+```
+
+**Rule of thumb**: Use `keys: :intern` when you know you're decoding arrays of 10+ objects with the same schema.
+
+**Note**: Keys containing escape sequences (e.g., `"field\nname"`) are not interned because the raw JSON bytes differ from the decoded string. This is rare in practice and has negligible performance impact.
+
 ## Summary
 
 | Operation | Speed | Memory | Reductions |
@@ -180,5 +241,8 @@ mix run bench/stress_bench.exs
 | **Encode (large)** | 5-6x faster | 2-3x less | 28,000x fewer |
 | **Encode (medium)** | 2-3x faster | 2-3x less | 200-2000x fewer |
 | **Decode** | 2-3x faster | similar | — |
+| **Decode (keys: :intern)** | +30% faster* | similar | — |
 
-**Bottom line**: RustyJson's biggest advantage is encoding large payloads, where it's 5-6x faster with 2-3x less memory and dramatically reduced BEAM scheduler load.
+*For arrays of objects with repeated keys (API responses, DB results, etc.)
+
+**Bottom line**: RustyJson's biggest advantage is encoding large payloads, where it's 5-6x faster with 2-3x less memory and dramatically reduced BEAM scheduler load. For decoding bulk data, enable `keys: :intern` for an additional 30% speedup.

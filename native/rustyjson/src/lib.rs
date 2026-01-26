@@ -78,7 +78,7 @@ fn encode_direct<'a>(
 /// Uses lexical-core for fast number parsing, zero-copy strings when possible
 /// No dirty scheduler - fast enough for normal scheduler
 #[rustler::nif(name = "nif_decode")]
-fn decode<'a>(env: Env<'a>, input: rustler::Binary) -> Result<Term<'a>, Error> {
+fn decode<'a>(env: Env<'a>, input: rustler::Binary, intern_keys: bool) -> Result<Term<'a>, Error> {
     let slice = input.as_slice();
-    direct_decode::json_to_term(env, slice).map_err(|e| Error::RaiseTerm(Box::new(e)))
+    direct_decode::json_to_term(env, slice, intern_keys).map_err(|e| Error::RaiseTerm(Box::new(e)))
 }

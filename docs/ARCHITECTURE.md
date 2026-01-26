@@ -1,20 +1,20 @@
 # RustyJson Architecture
 
-This document explains the architectural decisions behind RustyJson and compares them to Jason's approach.
+This document explains the architectural decisions behind RustyJson and compares NIF-based encoding to pure-Elixir approaches.
 
 ## Overview
 
-RustyJson is a Rust NIF-based JSON library that prioritizes **memory efficiency** over theoretical purity. While Jason returns true iolists, RustyJson returns single binaries - a deliberate trade-off that yields 2-4x memory reduction during encoding and significantly reduced BEAM scheduler load.
+RustyJson is a Rust NIF-based JSON library that prioritizes **memory efficiency** over theoretical purity. While pure-Elixir encoders return true iolists, RustyJson returns single binaries - a deliberate trade-off that yields 2-4x memory reduction during encoding and significantly reduced BEAM scheduler load.
 
 ## Encoding Architecture
 
-### Jason's Approach (Pure Elixir, True iolist)
+### Pure Elixir Approach (iolist output)
 
 ```
 Elixir Term
     │
     ▼
-Protocol Dispatch (Jason.Encoder)
+Protocol Dispatch (Encoder)
     │
     ▼
 Build iolist incrementally
@@ -69,7 +69,7 @@ For a 2MB JSON payload (canada.json benchmark):
 | BEAM reductions | ~964,000 | ~3,500 (275x fewer) |
 | Final output | 2 MB iolist | 2 MB binary |
 
-The difference comes from Jason creating many intermediate iolist allocations during recursive encoding, while RustyJson builds a single buffer in Rust and copies once to BEAM.
+The difference comes from iolist-based encoding creating many intermediate allocations during recursive encoding, while RustyJson builds a single buffer in Rust and copies once to BEAM.
 
 **Note:** Memory measurements use `:erlang.memory(:total)` delta. See [BENCHMARKS.md](BENCHMARKS.md) for methodology and why Benchee memory measurements don't work for NIFs.
 
@@ -132,12 +132,12 @@ fn skip_whitespace(&mut self) {
 
 | File | Purpose | Lines | Unsafe |
 |------|---------|-------|--------|
-| `lib.rs` | NIF entry point | ~100 | **0** |
-| `direct_json.rs` | JSON encoder | ~1,000 | **0** |
-| `direct_decode.rs` | JSON decoder | ~500 | **0** |
-| `compression.rs` | Gzip compression | ~60 | **0** |
-| `decimal.rs` | Decimal handling | ~110 | **0** |
-| **Total** | | **~1,770** | **0** |
+| `lib.rs` | NIF entry point | ~85 | **0** |
+| `direct_json.rs` | JSON encoder | ~1,050 | **0** |
+| `direct_decode.rs` | JSON decoder | ~550 | **0** |
+| `compression.rs` | Gzip compression | ~70 | **0** |
+| `decimal.rs` | Decimal handling | ~95 | **0** |
+| **Total** | | **~1,850** | **0** |
 
 **Design choices that eliminate unsafe:**
 
@@ -229,7 +229,7 @@ However, we believe these are unnecessary for RustyJson given the safety guarant
 ### Encode vs Decode: Why They Differ
 
 **Encoding** is where RustyJson has the biggest advantage:
-- Jason creates many small iolist allocations on BEAM heap
+- Pure-Elixir encoders create many small iolist allocations on BEAM heap
 - RustyJson builds one buffer in Rust, copies once to BEAM
 - Result: 3-6x faster, 2-3x less memory, 100-28,000x fewer BEAM reductions
 
@@ -251,10 +251,10 @@ RustyJson's encoding advantage scales with payload size:
 
 This is because:
 1. **NIF call overhead** is fixed (~0.1ms) regardless of payload size
-2. **Allocation overhead** grows with payload - Jason's many small allocations compound
-3. **BEAM reductions** scale linearly with work - Jason does all work in BEAM, RustyJson offloads to native code
+2. **Allocation overhead** grows with payload - iolist-based encoding creates many small allocations that compound
+3. **BEAM reductions** scale linearly with work - pure-Elixir encoders do all work in BEAM, RustyJson offloads to native code
 
-### When Jason Wins
+### When Pure-Elixir Wins
 
 1. **Tiny payloads (<100 bytes)**: NIF call overhead exceeds encoding time
 2. **Streaming scenarios**: True iolists can be sent to sockets incrementally
@@ -329,7 +329,7 @@ When `protocol: true`:
 
 ## Decoding Architecture
 
-### Jason
+### Pure Elixir Approach
 
 ```
 JSON String
@@ -344,7 +344,7 @@ Build Elixir terms during parse
 Return term
 ```
 
-### RustyJson
+### RustyJson (NIF) Approach
 
 ```
 JSON String
@@ -467,6 +467,36 @@ RustyJson correctly rejects all invalid JSON with descriptive error messages:
 | `["\\x00"]` | Invalid escape sequence |
 | `{'a': 1}` | Single quotes not allowed |
 
+### Error Handling Philosophy
+
+RustyJson prioritizes **clear, actionable error messages** and **consistent error handling**.
+
+**Clear error messages:**
+
+Error messages describe the problem, not just its location:
+
+```elixir
+RustyJson.decode("{\"foo\":\"bar\\'s\"}")
+# => {:error, "Invalid escape sequence: \\'"}
+
+RustyJson.decode("[1, 2,]")
+# => {:error, "Expected value at position 6"}
+```
+
+**Consistent `{:error, reason}` returns:**
+
+`encode/1` and `decode/1` always return error tuples for invalid input—no exceptions:
+
+```elixir
+RustyJson.encode(%{{:a, :b} => 1})
+# => {:error, "Map key must be atom, string, or integer"}
+
+RustyJson.encode(self())  # PIDs aren't JSON-encodable
+# => {:error, "Unable to encode value at path: root"}
+```
+
+This makes error handling predictable—pattern match on results without needing `try/rescue`.
+
 ### Test Coverage
 
 RustyJson has been validated against the comprehensive [JSONTestSuite](https://github.com/nst/JSONTestSuite) by Nicolas Seriot:
@@ -487,25 +517,25 @@ RustyJson also passes the [nativejson-benchmark](https://github.com/miloyip/nati
 
 ### Implementation-Defined Behavior
 
-For the 35 implementation-defined tests, RustyJson makes these choices:
+For the 35 implementation-defined tests (`i_*`), RustyJson makes these choices:
 
-**Accepted:**
-- Very large integers (converted to floats when necessary)
-- Numbers with extreme exponents that underflow to zero
-- Invalid UTF-8 byte sequences in strings (passed through)
+**Accepted (15 tests):**
+- Numbers that underflow to zero or convert to large integers
+- Invalid UTF-8 byte sequences in strings (passed through without validation)
 
-**Rejected:**
+**Rejected (20 tests):**
 - Numbers with exponents that overflow (e.g., `1e9999`)
-- Lone Unicode surrogates (per RFC 7493 I-JSON recommendation)
-- UTF-16 encoded files (only UTF-8 supported)
-- Byte Order Marks (BOM)
+- Lone Unicode surrogates in `\uXXXX` escapes (per RFC 7493 I-JSON)
+- Non-UTF-8 encodings (UTF-16, BOM)
 - Nesting deeper than 128 levels
+
+See `test/json_test_suite_test.exs` for the complete list with explanations.
 
 ## What We Learned
 
 ### SIMD Is Actually Slower
 
-We tested SIMD-accelerated parsers like simd-json and sonic-rs. Result: **they performed worse than our purpose-built NIF**.
+We tested SIMD-accelerated parsers like simd-json and sonic-rs. The SIMD parsing gains were negated by the serde conversion overhead.
 
 Why? The bottleneck for JSON NIFs isn't parsing—it's **building Erlang terms**. SIMD libraries optimize for parsing JSON into native data structures, but for Elixir we need to:
 1. Parse JSON → intermediate Rust types (serde)
@@ -543,10 +573,90 @@ Under concurrent load (50 processes), normal schedulers had **1.7x higher throug
 
 **Why exceeding 1ms is acceptable here**:
 1. **28,000x fewer reductions** - Work is offloaded to native code, freeing BEAM schedulers for other processes
-2. **Net scheduler impact is lower** - Jason (pure Elixir) uses the scheduler for the entire duration with high reduction counts; RustyJson uses it briefly with minimal reductions
+2. **Net scheduler impact is lower** - Pure-Elixir encoders use the scheduler for the entire duration with high reduction counts; RustyJson uses it briefly with minimal reductions
 3. **Isolated processes** - Phoenix requests run in separate processes; one encode doesn't block others
 
 This is not a safety tradeoff—the NIF is memory-safe regardless of scheduler type. It's a practical decision: dirty schedulers add overhead without benefit.
+
+## Decode Strategies
+
+RustyJson supports optional decode strategies that can significantly improve performance for specific data patterns.
+
+### Key Interning (`keys: :intern`)
+
+When decoding arrays of objects with the same schema (repeated keys), key interning caches string keys to avoid re-allocating them for each object.
+
+```elixir
+# Default - no interning
+RustyJson.decode!(json)
+
+# Enable key interning for homogeneous arrays
+RustyJson.decode!(json, keys: :intern)
+```
+
+**How it works:**
+
+Without interning (default):
+```
+[{"id":1,"name":"a"}, {"id":2,"name":"b"}, ...]
+      ↓
+Allocate "id" string (object 1)
+Allocate "name" string (object 1)
+Allocate "id" string (object 2)    ← duplicate allocation
+Allocate "name" string (object 2)  ← duplicate allocation
+... × N objects
+```
+
+With interning:
+```
+[{"id":1,"name":"a"}, {"id":2,"name":"b"}, ...]
+      ↓
+Allocate "id" string (object 1)
+Allocate "name" string (object 1)
+Reuse "id" reference (object 2)    ← cache hit
+Reuse "name" reference (object 2)  ← cache hit
+... × N objects
+```
+
+**Implementation details:**
+
+*Hasher choice:* We use a hand-rolled FNV-1a hasher instead of Rust's default SipHash. SipHash is cryptographically strong (HashDoS resistant) but slower. For a per-parse cache with short JSON keys, FNV-1a provides ~3x faster lookups with no security downside—an attacker can't observe timing, and worst-case collision just means an extra allocation (no worse than default mode).
+
+*Parser design:* Rather than duplicating string parsing logic, we refactored to `parse_string_impl(for_key: bool)`. This single implementation handles both string values (`for_key: false`) and object keys (`for_key: true`), with interning logic gated behind the `for_key` flag and cache presence check. This avoids code duplication while ensuring interning overhead is zero when disabled.
+
+*Escaped keys:* Keys containing escape sequences (e.g., `"field\nname"`) are NOT interned. The raw JSON bytes (`field\nname`) differ from the decoded string (`field<newline>name`), so we can't use the input slice as a cache key. This is rare in practice—object keys almost never contain escapes.
+
+*Memory:* Cache is pre-allocated with 32 slots and grows as needed. Dropped automatically when parsing completes (no cleanup required).
+
+**When to use `keys: :intern`:**
+
+| Use Case | Benefit |
+|----------|---------|
+| API responses (arrays of records) | **~30% faster** |
+| Database query results | **~30% faster** |
+| Log/event streams | **~30% faster** |
+| Bulk data imports | **~30% faster** |
+
+**When NOT to use `keys: :intern`:**
+
+| Use Case | Penalty |
+|----------|---------|
+| Single configuration object | **2.5-3x slower** |
+| Heterogeneous arrays (different keys) | **2.5-3x slower** |
+| Unknown/variable schemas | **2.5-3x slower** |
+
+The overhead comes from maintaining a HashMap cache (using FNV-1a hashing). When keys aren't reused, you pay the cache cost without any benefit.
+
+**Benchmark results (pure Rust parsing):**
+
+| Scenario | Default | `keys: :intern` | Result |
+|----------|---------|-----------------|--------|
+| 10k objects × 5 keys | 3.46 ms | 2.45 ms | **29% faster** |
+| 10k objects × 10 keys | 6.92 ms | 4.88 ms | **29% faster** |
+| Single object, 1000 keys | 52 µs | 169 µs | **3.2x slower** |
+| Heterogeneous 500 objects | 186 µs | 475 µs | **2.5x slower** |
+
+See [BENCHMARKS.md](BENCHMARKS.md#key-interning-benchmarks) for detailed results.
 
 ## Future Considerations
 
@@ -558,7 +668,7 @@ This is not a safety tradeoff—the NIF is memory-safe regardless of scheduler t
 
 ### Not Planned
 
-1. **SIMD parsing**: We tested it - SIMD libraries require an intermediate serde step, which makes them slower than our direct term-building approach.
+1. **SIMD parsing**: SIMD libraries require an intermediate serde step, negating the parsing speed gains when building BEAM terms.
 
 2. **True iolist output**: The complexity isn't justified by real-world benefits.
 

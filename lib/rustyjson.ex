@@ -107,6 +107,35 @@ defmodule RustyJson do
 
   4. **Avoid atom keys in decode**: Using `keys: :atoms!` creates atoms from
      untrusted input, which can exhaust the atom table.
+
+  5. **Use key interning for bulk data**: When decoding arrays of objects with
+     the same schema (API responses, database results, webhooks), use `keys: :intern`
+     for ~30% faster parsing:
+
+         RustyJson.decode!(json, keys: :intern)
+
+     **Caution**: Don't use for single objects or varied schemas—cache overhead
+     makes it 2-3x *slower* when keys aren't reused.
+
+  ## Error Handling
+
+  RustyJson provides clear, actionable error messages. `encode/1` and `decode/1`
+  consistently return `{:error, reason}` tuples for invalid input.
+
+      # Error messages describe the problem
+      RustyJson.decode(~s({"key": "value\\\\'s"}))
+      # => {:error, "Invalid escape sequence: \\\\'"}
+
+      # Unencodable values return error tuples
+      RustyJson.encode(%{{:tuple, :key} => 1})
+      # => {:error, "Map key must be atom, string, or integer"}
+
+      # Strict UTF-16 surrogate validation per RFC 7493
+      RustyJson.decode(~s("\\\\uD800"))
+      # => {:error, "Lone surrogate in string"}
+
+  This makes error handling predictable—pattern match on results without needing
+  `try/rescue` blocks.
   """
 
   @typedoc """
@@ -143,8 +172,9 @@ defmodule RustyJson do
   - `:strings` - Keep keys as strings (default, safe)
   - `:atoms` - Convert to atoms only if they already exist (safe)
   - `:atoms!` - Always convert to atoms, creating new ones (unsafe with untrusted input)
+  - `:intern` - Cache repeated keys during parsing (~30% faster for arrays of objects)
   """
-  @type keys :: :strings | :atoms | :atoms!
+  @type keys :: :strings | :atoms | :atoms! | :intern
 
   @typedoc """
   Escape mode for JSON string encoding.
@@ -208,8 +238,8 @@ defmodule RustyJson do
     do: :erlang.nif_error(:nif_not_loaded)
 
   @doc false
-  @spec nif_decode(String.t()) :: term()
-  defp nif_decode(_input), do: :erlang.nif_error(:nif_not_loaded)
+  @spec nif_decode(String.t(), boolean()) :: term()
+  defp nif_decode(_input, _intern_keys), do: :erlang.nif_error(:nif_not_loaded)
 
   # ============================================================================
   # Encoding API
@@ -352,6 +382,10 @@ defmodule RustyJson do
     * `:strings` - Keep as strings (default, safe)
     * `:atoms` - Convert to existing atoms only (safe)
     * `:atoms!` - Convert to atoms, creating new ones (unsafe with untrusted input)
+    * `:intern` - Cache repeated keys during parsing. **~30% faster** for arrays of
+      objects with the same schema (REST APIs, GraphQL, database results, webhooks).
+      **Caution**: 2-3x slower for single objects or varied schemas—only use for
+      homogeneous arrays of 10+ objects.
 
   ## Examples
 
@@ -434,9 +468,13 @@ defmodule RustyJson do
     result =
       input
       |> IO.iodata_to_binary()
-      |> nif_decode()
+      |> nif_decode(keys == :intern)
 
-    transform_keys(result, keys)
+    case keys do
+      :intern -> result
+      :strings -> result
+      atoms_mode -> transform_keys(result, atoms_mode)
+    end
   end
 
   # ============================================================================
@@ -451,12 +489,11 @@ defmodule RustyJson do
 
   ## A Note on iodata
 
-  Unlike Jason, RustyJson returns a **single binary**, not an iolist. This is
-  intentional and provides excellent performance for payloads up to ~100MB.
+  RustyJson returns a **single binary**, not an iolist. This is intentional
+  and provides excellent performance for payloads up to ~100MB.
 
-  The memory efficiency of RustyJson comes from its encoding process (no
-  intermediate allocations), not from chunked output. A 10MB payload uses
-  ~15MB peak memory with RustyJson vs ~150MB with Jason.
+  The memory efficiency comes from the encoding process (no intermediate
+  allocations), not from chunked output. A 10MB payload uses ~15MB peak memory.
 
   For truly massive payloads (100MB+), consider:
   - Streaming the data structure itself (encode in chunks)
@@ -534,16 +571,14 @@ defmodule RustyJson do
   end
 
   @doc false
-  defp validate_keys!(keys) when keys in [:strings, :atoms, :atoms!], do: :ok
+  defp validate_keys!(keys) when keys in [:strings, :atoms, :atoms!, :intern], do: :ok
 
   defp validate_keys!(other) do
     raise ArgumentError,
-          "invalid :keys option #{inspect(other)}, expected one of: :strings, :atoms, :atoms!"
+          "invalid :keys option #{inspect(other)}, expected one of: :strings, :atoms, :atoms!, :intern"
   end
 
   @doc false
-  defp transform_keys(value, :strings), do: value
-
   defp transform_keys(value, keys_mode) when is_map(value) do
     Map.new(value, fn {k, v} ->
       {string_to_atom(k, keys_mode), transform_keys(v, keys_mode)}

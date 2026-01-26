@@ -1,8 +1,53 @@
 use rustler::{types::atom, Encoder, Env, NewBinary, Term};
 use std::collections::HashMap;
+use std::hash::{BuildHasher, Hasher};
 
 /// Maximum nesting depth to prevent stack overflow
 const MAX_DEPTH: usize = 128;
+
+// ============================================================================
+// FNV-1a Hasher - fast non-cryptographic hash for key interning
+// ============================================================================
+
+/// FNV-1a hasher optimized for short byte slices (JSON keys).
+/// Non-cryptographic but fast - perfect for single-parse deduplication.
+#[derive(Default)]
+struct FnvHasher(u64);
+
+impl Hasher for FnvHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        const FNV_PRIME: u64 = 0x100000001b3;
+        for &byte in bytes {
+            self.0 ^= byte as u64;
+            self.0 = self.0.wrapping_mul(FNV_PRIME);
+        }
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+struct FnvBuildHasher;
+
+impl BuildHasher for FnvBuildHasher {
+    type Hasher = FnvHasher;
+
+    #[inline]
+    fn build_hasher(&self) -> FnvHasher {
+        FnvHasher(0xcbf29ce484222325) // FNV offset basis
+    }
+}
+
+impl Default for FnvBuildHasher {
+    fn default() -> Self {
+        FnvBuildHasher
+    }
+}
+
+type FastHashMap<K, V> = HashMap<K, V, FnvBuildHasher>;
 
 /// Direct JSON-to-Term parser - builds Erlang terms during parsing without intermediate representation
 pub struct DirectParser<'a, 'b> {
@@ -10,16 +55,24 @@ pub struct DirectParser<'a, 'b> {
     pos: usize,
     depth: usize,
     env: Env<'a>,
+    /// Optional key cache for interning repeated object keys.
+    /// Only allocated when `intern_keys=true`.
+    key_cache: Option<FastHashMap<&'b [u8], Term<'a>>>,
 }
 
 impl<'a, 'b> DirectParser<'a, 'b> {
     #[inline]
-    pub fn new(env: Env<'a>, input: &'b [u8]) -> Self {
+    pub fn new(env: Env<'a>, input: &'b [u8], intern_keys: bool) -> Self {
         Self {
             input,
             pos: 0,
             depth: 0,
             env,
+            key_cache: if intern_keys {
+                Some(FastHashMap::with_capacity_and_hasher(32, FnvBuildHasher))
+            } else {
+                None
+            },
         }
     }
 
@@ -105,8 +158,10 @@ impl<'a, 'b> DirectParser<'a, 'b> {
         }
     }
 
+    /// Core string parsing logic. When `for_key` is true and we have a cache,
+    /// attempts to intern non-escaped strings.
     #[inline]
-    fn parse_string(&mut self) -> Result<Term<'a>, String> {
+    fn parse_string_impl(&mut self, for_key: bool) -> Result<Term<'a>, String> {
         self.advance(); // Skip opening quote
         let start = self.pos;
         let mut has_escape = false;
@@ -118,13 +173,32 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                     let end = self.pos;
                     self.advance(); // Skip closing quote
 
+                    // Escaped strings: decode and return (cannot intern - decoded
+                    // bytes differ from input slice, and escaped keys are rare)
                     if has_escape {
                         let decoded = self.decode_escaped_string(start, end)?;
                         return Ok(encode_binary(self.env, &decoded));
-                    } else {
-                        // No escapes - direct slice (zero-copy)
-                        return Ok(encode_binary(self.env, &self.input[start..end]));
                     }
+
+                    let str_bytes = &self.input[start..end];
+
+                    // Key interning: check cache if enabled and parsing a key.
+                    // Note: Keys with escape sequences are NOT interned because:
+                    // 1. We can't use raw input bytes as cache key (they differ from decoded form)
+                    // 2. Escaped keys in object schemas are rare in practice
+                    // 3. Performance impact is negligible for typical data
+                    if for_key {
+                        if let Some(ref mut cache) = self.key_cache {
+                            if let Some(&cached) = cache.get(str_bytes) {
+                                return Ok(cached);
+                            }
+                            let term = encode_binary(self.env, str_bytes);
+                            cache.insert(str_bytes, term);
+                            return Ok(term);
+                        }
+                    }
+
+                    return Ok(encode_binary(self.env, str_bytes));
                 }
                 b'\\' => {
                     has_escape = true;
@@ -144,6 +218,18 @@ impl<'a, 'b> DirectParser<'a, 'b> {
             }
         }
         Err("Unterminated string".to_string())
+    }
+
+    /// Parse a string value (not interned)
+    #[inline]
+    fn parse_string(&mut self) -> Result<Term<'a>, String> {
+        self.parse_string_impl(false)
+    }
+
+    /// Parse an object key (interned if cache enabled)
+    #[inline]
+    fn parse_key(&mut self) -> Result<Term<'a>, String> {
+        self.parse_string_impl(true)
     }
 
     #[inline]
@@ -372,11 +458,11 @@ impl<'a, 'b> DirectParser<'a, 'b> {
         let mut values = Vec::with_capacity(estimated_capacity);
 
         loop {
-            // Parse key
+            // Parse key (use parse_key for potential interning)
             if self.peek() != Some(b'"') {
                 return Err(format!("Expected string key at position {}", self.pos));
             }
-            let key = self.parse_string()?;
+            let key = self.parse_key()?;
             keys.push(key);
 
             self.skip_whitespace();
@@ -458,6 +544,6 @@ fn encode_binary<'a>(env: Env<'a>, bytes: &[u8]) -> Term<'a> {
 
 /// Parse JSON directly to Erlang terms without intermediate representation
 #[inline]
-pub fn json_to_term<'a>(env: Env<'a>, json: &[u8]) -> Result<Term<'a>, String> {
-    DirectParser::new(env, json).parse()
+pub fn json_to_term<'a>(env: Env<'a>, json: &[u8], intern_keys: bool) -> Result<Term<'a>, String> {
+    DirectParser::new(env, json, intern_keys).parse()
 }

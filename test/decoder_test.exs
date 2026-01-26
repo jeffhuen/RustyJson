@@ -298,4 +298,79 @@ defmodule DecoderTest do
       assert RustyJson.decode!(RustyJson.encode!(data)) == data
     end
   end
+
+  describe "decode with keys: :intern" do
+    test "decodes array of objects correctly" do
+      json = ~s([{"id":1,"name":"a"},{"id":2,"name":"b"}])
+
+      assert [%{"id" => 1, "name" => "a"}, %{"id" => 2, "name" => "b"}] =
+               RustyJson.decode!(json, keys: :intern)
+    end
+
+    test "handles empty objects" do
+      assert [%{}, %{}] = RustyJson.decode!("[{},{}]", keys: :intern)
+    end
+
+    test "handles nested objects" do
+      json = ~s([{"user":{"id":1}},{"user":{"id":2}}])
+      result = RustyJson.decode!(json, keys: :intern)
+      assert [%{"user" => %{"id" => 1}}, %{"user" => %{"id" => 2}}] = result
+    end
+
+    test "handles escaped keys (not interned but still correct)" do
+      json = ~s([{"key\\nwith\\nnewlines":1},{"key\\nwith\\nnewlines":2}])
+      result = RustyJson.decode!(json, keys: :intern)
+      assert [%{"key\nwith\nnewlines" => 1}, %{"key\nwith\nnewlines" => 2}] = result
+    end
+
+    test "handles unicode escaped keys" do
+      json = ~s([{"\\u0069d":1},{"\\u0069d":2}])
+      result = RustyJson.decode!(json, keys: :intern)
+      assert [%{"id" => 1}, %{"id" => 2}] = result
+    end
+
+    test "works with single object (no benefit but should work)" do
+      json = ~s({"id":1,"name":"test"})
+      assert %{"id" => 1, "name" => "test"} = RustyJson.decode!(json, keys: :intern)
+    end
+
+    test "produces identical results to default mode" do
+      json = ~s([{"a":1,"b":{"c":2}},{"a":3,"b":{"c":4}}])
+      default = RustyJson.decode!(json)
+      interned = RustyJson.decode!(json, keys: :intern)
+      assert default == interned
+    end
+
+    test "handles primitives (no objects)" do
+      assert RustyJson.decode!("123", keys: :intern) == 123
+      assert RustyJson.decode!("true", keys: :intern) == true
+      assert RustyJson.decode!(~s("hello"), keys: :intern) == "hello"
+      assert RustyJson.decode!("[1,2,3]", keys: :intern) == [1, 2, 3]
+    end
+
+    test "handles large arrays of objects" do
+      # Generate 100 objects with same keys
+      objects = for i <- 1..100, do: %{"id" => i, "name" => "item#{i}", "active" => true}
+      json = RustyJson.encode!(objects)
+      result = RustyJson.decode!(json, keys: :intern)
+      assert result == objects
+    end
+
+    test "handles duplicate keys (last wins)" do
+      # Even with interning, duplicate keys should follow JSON semantics (last one wins)
+      json = ~s([{"a": 1, "a": 2}, {"b": 3, "b": 4}])
+      assert [%{"a" => 2}, %{"b" => 4}] = RustyJson.decode!(json, keys: :intern)
+    end
+
+    test "handles empty keys" do
+      json = ~s([{"": 1}, {"": 2}])
+      assert [%{"" => 1}, %{"" => 2}] = RustyJson.decode!(json, keys: :intern)
+    end
+
+    test "handles repeated keys at different nesting levels" do
+      # "id" appears at top level and nested level
+      json = ~s([{"id": 1, "nested": {"id": 2}}])
+      assert [%{"id" => 1, "nested" => %{"id" => 2}}] = RustyJson.decode!(json, keys: :intern)
+    end
+  end
 end

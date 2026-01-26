@@ -40,3 +40,6 @@ native/rustyjson/target/
 # Benchmark data and output (large files)
 /bench/data/
 /bench/output/
+
+# Test fixtures (downloaded on demand, not shipped with package)
+/test/fixtures/

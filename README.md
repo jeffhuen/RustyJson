@@ -4,11 +4,11 @@ A JSON library for Elixir powered by Rust NIFs, designed as a drop-in replacemen
 
 ## Why RustyJson?
 
-**The Problem**: JSON encoding in Elixir can be memory-intensive. When encoding large data structures, Jason (and other pure-Elixir encoders) create many intermediate binary allocations that pressure the garbage collector. For high-throughput applications processing large JSON payloads, this memory overhead becomes significant.
+**The Problem**: JSON encoding in Elixir can be memory-intensive. Pure-Elixir encoders create many intermediate binary allocations that pressure the garbage collector. For high-throughput applications processing large JSON payloads, this memory overhead becomes significant.
 
-**Why not existing Rust JSON NIFs?** After OTP 24, Erlang's binary handling improved significantly, closing the performance gap between NIFs and pure-Elixir implementations. Libraries like [jiffy](https://github.com/davisp/jiffy) and the original [jsonrs](https://github.com/benhaney/jsonrs) struggled to outperform Jason on modern BEAM versions. Additionally, the original jsonrs is incompatible with Rustler 0.37+, which is required by many other packages.
+**Why a new library?** After OTP 24, Erlang's binary handling improved significantly, narrowing the performance gap between NIFs and pure-Elixir implementations. Additionally, Rustler 0.37+ (required by many modern packages) introduced breaking changes that left some existing NIF-based JSON libraries behind.
 
-**RustyJson's approach**: Rather than trying to beat Jason on speed alone, RustyJson focuses on:
+**RustyJson's approach**: RustyJson focuses on:
 1. **Lower memory usage** during encoding (2-4x less BEAM memory for large payloads)
 2. **Reduced BEAM scheduler load** (100-2000x fewer reductions - work happens in native code)
 3. **Faster encoding/decoding** (2-3x faster for medium/large data)
@@ -108,6 +108,21 @@ All benchmarks on Apple Silicon M1. RustyJson's advantage grows with payload siz
 
 Both libraries produce identical Elixir data structures, so memory usage is similar for decoding.
 
+### Decoding API Responses (~30% faster)
+
+Most JSON that applications decode follows the same pattern: arrays of objects with identical keys. Paginated REST endpoints (`GET /users`), GraphQL queries, database results, webhook payloads, ElasticSearch hits—they all return `[{same keys}, {same keys}, ...]`.
+
+Use `keys: :intern` to cache object keys during parsing:
+
+```elixir
+# API response: 10,000 users with {id, name, email, created_at}
+RustyJson.decode!(json, keys: :intern)  # ~30% faster
+```
+
+This allocates each key (`"id"`, `"name"`, etc.) once and reuses it across all objects, instead of re-allocating identical strings thousands of times.
+
+**Don't use for single objects or varied schemas** - the cache overhead makes it 2-3x *slower* when keys aren't reused. Only use when you know you're decoding arrays of 10+ objects with the same structure.
+
 ### BEAM Scheduler Load
 
 ```elixir
@@ -121,8 +136,9 @@ The real benefit is **reduced BEAM scheduler load** - JSON processing happens in
 ### When to Use RustyJson
 
 - **Best for**: Large payloads (1MB+), API responses, data exports
+- **Decoding bulk data**: Use `keys: :intern` for arrays of objects (API responses, DB results)
 - **Equal to Jason**: Small payloads (<1KB) due to NIF call overhead
-- **Biggest wins**: Encoding large, complex data structures
+- **Biggest wins**: Encoding large structures, decoding homogeneous arrays
 
 See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for detailed methodology.
 
@@ -155,7 +171,8 @@ These types are handled natively in Rust without protocol overhead:
 - `protocol: true` - Enable custom `RustyJson.Encoder` protocol
 
 **Decoding:**
-- `keys: :strings | :atoms | :atoms!` - Key handling
+- `keys: :strings | :atoms | :atoms! | :intern` - Key handling
+  - `:intern` - **~30% faster** for arrays of objects (REST APIs, GraphQL, DB results, webhooks)
 
 ### Custom Encoding
 
@@ -188,7 +205,29 @@ RustyJson is fully compliant with RFC 8259 and passes **283/283 mandatory tests*
 - **188/188** `n_` tests (must reject)
 - Rejects lone surrogates per [RFC 7493 I-JSON](https://datatracker.ietf.org/doc/html/rfc7493)
 
+Run `mix test test/json_test_suite_test.exs` to validate compliance (downloads test fixtures on first run).
+
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed compliance information.
+
+## Error Handling
+
+RustyJson provides clear, actionable error messages and predictable error handling:
+
+```elixir
+# Clear error messages tell you exactly what's wrong
+RustyJson.decode(~s({"key": "value\\'s"}))
+# => {:error, "Invalid escape sequence: \\'"}
+
+# Unencodable values return error tuples, not exceptions
+RustyJson.encode(%{{:tuple, :key} => 1})
+# => {:error, "Map key must be atom, string, or integer"}
+
+# Strict UTF-16 surrogate validation per RFC 7493
+RustyJson.decode(~s("\\uD800"))
+# => {:error, "Lone surrogate in string"}
+```
+
+`encode/1` and `decode/1` consistently return `{:error, reason}` tuples for invalid input, making error handling predictable with pattern matching.
 
 ## How It Works
 
@@ -226,7 +265,7 @@ default = ["mimalloc"]
 
 ### What We Learned
 
-The bottleneck for JSON NIFs isn't parsing—it's building Erlang terms. SIMD-accelerated parsers like simd-json and sonic-rs actually performed **worse** because they use serde, requiring double conversion (JSON → Rust types → BEAM terms).
+The bottleneck for JSON NIFs isn't parsing—it's building Erlang terms. SIMD-accelerated parsers use serde, requiring double conversion (JSON → Rust types → BEAM terms). RustyJson skips this by building BEAM terms directly during parsing.
 
 The wins come from:
 1. **Skipping serde entirely** - Walk JSON and build BEAM terms directly in one pass
