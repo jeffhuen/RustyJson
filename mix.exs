@@ -83,7 +83,8 @@ defmodule RustyJson.MixProject do
       extras: [
         "README.md",
         "LICENSE",
-        "docs/ARCHITECTURE.md"
+        "docs/ARCHITECTURE.md",
+        "docs/BENCHMARKS.md"
       ]
     ]
   end
