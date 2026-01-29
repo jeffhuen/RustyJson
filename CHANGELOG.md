@@ -116,7 +116,7 @@ RustyJson now matches Jason's public API 1:1 in signatures, return types, and be
 - **Large integer precision** — Integers exceeding `u64::MAX` are now decoded using arbitrary-precision `BigInt` (via `num-bigint`) instead of falling back to `f64`, which lost precision. Matches Jason's behavior of preserving exact integer values regardless of magnitude.
 - **`html_safe` forward slash escaping** — `escape: :html_safe` now correctly escapes `/` as `\/`, matching Jason. Previously `/` was only escaped in unicode/javascript safe modes.
 - **Encoding options propagation** — `escape` and `maps` options now flow correctly through the Encoder protocol, Fragment functions, Helpers macros, and OrderedObject encoding. Previously these options were consumed before reaching protocol implementations.
-- **Fragment functions with `protocol: false`** — Function-based Fragments (from `json_map`, `OrderedObject`, etc.) are now resolved before sending to the Rust NIF, preventing crashes when using `protocol: false`.
+- **Nested Fragment encoding** — Fragments nested inside maps or lists now encode correctly in both `protocol: true` and `protocol: false` modes. The Encoder protocol now resolves Fragment functions to iodata immediately instead of wrapping in another closure, and `resolve_fragment_functions` recursively traverses maps and lists to resolve any remaining function-based Fragments before the Rust NIF.
 - **Helpers key validation regex** — Fixed character class regex that incorrectly rejected alphabetic keys. Now uses hex escapes for correct ASCII range matching.
 
 ### Performance
@@ -125,7 +125,7 @@ No regressions. Relative speedup vs Jason is unchanged from v0.2.0.
 
 ### Testing
 
-- 240 tests (90 new), all passing with 0 failures.
+- 394 tests, all passing with 0 failures.
 - New test files: `encode_test.exs`, `helpers_test.exs`, `sigil_test.exs`, `ordered_object_test.exs`, `decoder_test_module_test.exs`.
 - Updated all error pattern matches across test suite for new structured error returns.
 - Tightened formatter tests to use exact-match assertions instead of substring matches.
