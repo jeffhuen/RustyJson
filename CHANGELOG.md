@@ -72,8 +72,8 @@ RustyJson now matches Jason's public API 1:1 in signatures, return types, and be
 
 #### New Modules
 
-- **`RustyJson.Decoder`** - Thin wrapper matching Jason's `Jason.Decoder` API. Provides `parse/2` that delegates to `RustyJson.decode/2`.
-- **`RustyJson.Encode`** - Low-level encoding functions (`value/2`, `atom/2`, `integer/1`, `float/1`, `list/2`, `keyword/2`, `map/2`, `string/2`, `struct/2`, `key/2`), compatible with `Jason.Encode`. `keyword/2` preserves insertion order (does not convert to map).
+- **`RustyJson.Decoder`** - Thin wrapper matching Jason's Decoder API. Provides `parse/2` that delegates to `RustyJson.decode/2`.
+- **`RustyJson.Encode`** - Low-level encoding functions (`value/2`, `atom/2`, `integer/1`, `float/1`, `list/2`, `keyword/2`, `map/2`, `string/2`, `struct/2`, `key/2`), compatible with Jason's Encode module. `keyword/2` preserves insertion order (does not convert to map).
 - **`RustyJson.Helpers`** - Compile-time macros `json_map/1` and `json_map_take/2` that pre-encode JSON object keys at compile time for faster runtime encoding. Preserves key insertion order, propagates encoding options (escape, maps) at runtime via function-based Fragments.
 - **`RustyJson.Sigil`** - `~j` sigil (runtime, supports interpolation) and `~J` sigil (compile-time) for JSON literals. Modifiers: `a` (atoms), `A` (atoms!), `r` (reference), `c` (copy). Unknown modifiers raise `ArgumentError`.
 - **`RustyJson.OrderedObject`** - Order-preserving JSON object struct with `Access` behaviour and `Enumerable` protocol.
@@ -92,9 +92,9 @@ RustyJson now matches Jason's public API 1:1 in signatures, return types, and be
 
 #### Encoder Protocol (Breaking)
 
-- **`RustyJson.Encoder.encode/1`** changed to **`encode/2`** with an `opts` parameter, matching `Jason.Encoder.encode/2`. The `opts` parameter carries encoder options (`:escape`, `:maps`) as a keyword list, enabling custom implementations like `Fragment` and `OrderedObject` to respect encoding context. All protocol implementations must update from `def encode(value)` to `def encode(value, _opts)`.
+- **`RustyJson.Encoder` protocol** changed from `encode/1` to **`encode/2`** with an `opts` parameter, matching Jason's Encoder protocol. The `opts` parameter carries encoder options (`:escape`, `:maps`) as a keyword list, enabling custom implementations like `Fragment` and `OrderedObject` to respect encoding context. All protocol implementations must update from `def encode(value)` to `def encode(value, _opts)`.
 - **`protocol: true` is now the default** in `encode/2` and `encode!/2`. Previously required explicit opt-in. This matches Jason, which always dispatches through its Encoder protocol.
-- **`Any` fallback now raises** `Protocol.UndefinedError` for structs without an explicit `RustyJson.Encoder` implementation, matching Jason. Previously, structs were silently encoded via `Map.from_struct/1`. There is no fallback to `Jason.Encoder` — RustyJson is a complete replacement, not a bridge.
+- **`Any` fallback now raises** `Protocol.UndefinedError` for structs without an explicit `RustyJson.Encoder` implementation, matching Jason. Previously, structs were silently encoded via `Map.from_struct/1`. There is no fallback to Jason's Encoder — RustyJson is a complete replacement, not a bridge.
 - **`MapSet` and `Range` now raise** `Protocol.UndefinedError` by default (matching Jason). Previously had pass-through encoder implementations. Use `protocol: false` to encode them via the Rust NIF directly.
 
 #### Formatter API (Breaking)
@@ -108,7 +108,7 @@ RustyJson now matches Jason's public API 1:1 in signatures, return types, and be
 
 #### OrderedObject
 
-- **`pop/2`** changed to **`pop/3`** with an optional `default` parameter (default: `nil`), matching `Jason.OrderedObject.pop/3`.
+- **`pop/2`** changed to **`pop/3`** with an optional `default` parameter (default: `nil`), matching Jason's OrderedObject `pop/3`.
 - Key type changed from `String.t()` to `String.Chars.t()` for Jason compatibility.
 
 ### Fixed

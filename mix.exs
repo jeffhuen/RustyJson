@@ -82,6 +82,7 @@ defmodule RustyJson.MixProject do
       source_url: "https://github.com/jeffhuen/rustyjson",
       extras: [
         "README.md",
+        "CHANGELOG.md",
         "LICENSE",
         "docs/ARCHITECTURE.md",
         "docs/BENCHMARKS.md"
