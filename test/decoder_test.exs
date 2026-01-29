@@ -623,11 +623,15 @@ defmodule DecoderTest do
     end
 
     test "digit limit of 0 disables the check" do
-      # 50-digit number - larger than default limit of 1024 won't trigger,
-      # but verifies limit=0 doesn't reject it
-      big_num = String.duplicate("9", 50)
+      # Use a number exceeding the default 1024-digit limit
+      # to verify that limit=0 truly disables the check
+      big_num = String.duplicate("9", 2000)
       json = big_num
-      assert {:ok, _} = RustyJson.decode(json, decoding_integer_digit_limit: 0)
+      # First verify it would fail with the default limit
+      assert {:error, _} = RustyJson.decode(json, decoding_integer_digit_limit: 1024)
+      # Now verify limit=0 allows it
+      assert {:ok, result} = RustyJson.decode(json, decoding_integer_digit_limit: 0)
+      assert result == String.to_integer(big_num)
     end
 
     test "floats are not affected by digit limit" do

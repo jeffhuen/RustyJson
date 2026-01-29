@@ -321,6 +321,7 @@ defmodule RustyJson do
     {:ok, encode!(input, opts)}
   rescue
     e in [RustyJson.EncodeError] -> {:error, e}
+    e in [Protocol.UndefinedError] -> {:error, e}
     e in [ArgumentError] -> {:error, e}
     e in [ErlangError] -> {:error, %RustyJson.EncodeError{message: error_message(e)}}
   end
@@ -799,6 +800,16 @@ defmodule RustyJson do
   defp resolve_fragment_functions(%RustyJson.Fragment{encode: encode} = frag, opts)
        when is_function(encode, 1) do
     %{frag | encode: encode.(opts)}
+  end
+
+  defp resolve_fragment_functions(%RustyJson.Fragment{} = frag, _opts), do: frag
+
+  defp resolve_fragment_functions(map, opts) when is_map(map) do
+    :maps.map(fn _k, v -> resolve_fragment_functions(v, opts) end, map)
+  end
+
+  defp resolve_fragment_functions([head | tail], opts) do
+    [resolve_fragment_functions(head, opts) | resolve_fragment_functions(tail, opts)]
   end
 
   defp resolve_fragment_functions(value, _opts), do: value

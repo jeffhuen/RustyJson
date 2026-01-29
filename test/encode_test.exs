@@ -108,6 +108,24 @@ defmodule EncodeTest do
       result = IO.iodata_to_binary(RustyJson.Encode.key("<key>", escape))
       assert result =~ "\\u003C"
     end
+
+    test "encodes empty string key" do
+      {escape, _} = RustyJson.Encode.opts()
+      result = IO.iodata_to_binary(RustyJson.Encode.key("", escape))
+      assert result == ""
+    end
+
+    test "encodes key with special characters" do
+      {escape, _} = RustyJson.Encode.opts()
+      result = IO.iodata_to_binary(RustyJson.Encode.key("hello \"world\"", escape))
+      assert result == "hello \\\"world\\\""
+    end
+
+    test "encodes float key via String.Chars" do
+      {escape, _} = RustyJson.Encode.opts()
+      result = IO.iodata_to_binary(RustyJson.Encode.key(3.14, escape))
+      assert result == "3.14"
+    end
   end
 
   describe "keyword/2 preserves order" do

@@ -60,7 +60,7 @@ defmodule HelpersTest do
     test "raises ArgumentError on missing key (matches Jason)" do
       user = %{name: "Alice"}
 
-      assert_raise ArgumentError, fn ->
+      assert_raise ArgumentError, ~r/expected a map with keys.*:missing/, fn ->
         json_map_take(user, [:name, :missing])
       end
     end

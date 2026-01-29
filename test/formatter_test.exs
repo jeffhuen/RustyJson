@@ -87,12 +87,29 @@ defmodule FormatterTest do
   end
 
   describe "number and key order preservation" do
-    test "preserves number formatting (1.00 stays 1.00)" do
+    test "minimize preserves number formatting (1.00 stays 1.00)" do
       assert RustyJson.Formatter.minimize(~s({"x": 1.00})) == ~s({"x":1.00})
     end
 
-    test "preserves exponent notation" do
+    test "minimize preserves exponent notation" do
       assert RustyJson.Formatter.minimize(~s({"x": 1e2})) == ~s({"x":1e2})
+    end
+
+    test "pretty_print preserves number formatting" do
+      result = RustyJson.Formatter.pretty_print(~s({"x": 1.00}))
+      assert result =~ "1.00"
+    end
+
+    test "pretty_print preserves exponent notation" do
+      result = RustyJson.Formatter.pretty_print(~s({"x": 1.5e+10}))
+      assert result =~ "1.5e+10"
+    end
+
+    test "preserves complex number formats" do
+      for num <- ["1.000", "1e-5", "1.5e+10", "-0.0", "0.001"] do
+        input = ~s({"x": #{num}})
+        assert RustyJson.Formatter.minimize(input) == ~s({"x":#{num}})
+      end
     end
 
     test "preserves key order in pretty_print" do
@@ -130,13 +147,14 @@ defmodule FormatterTest do
     end
   end
 
-  describe "error handling" do
-    test "pretty_print passes through non-JSON (stripping whitespace)" do
-      # Jason formatter is tolerant but strips whitespace
+  describe "non-JSON passthrough (matches Jason)" do
+    test "pretty_print strips whitespace from non-JSON input" do
+      # Both Jason and RustyJson formatters operate on raw bytes without
+      # validating JSON structure. Non-JSON input has whitespace stripped.
       assert RustyJson.Formatter.pretty_print("not json") == "notjson"
     end
 
-    test "minimize passes through non-JSON (stripping whitespace)" do
+    test "minimize strips whitespace from non-JSON input" do
       assert RustyJson.Formatter.minimize("not json") == "notjson"
     end
   end

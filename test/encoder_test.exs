@@ -1,5 +1,32 @@
+defmodule EncoderTest.Money do
+  defstruct [:amount, :currency]
+end
+
+defimpl RustyJson.Encoder, for: EncoderTest.Money do
+  def encode(%{amount: amount, currency: currency}, _opts) do
+    %{amount: amount, currency: to_string(currency)}
+  end
+end
+
+defmodule EncoderTest.DerivedAll do
+  @derive RustyJson.Encoder
+  defstruct [:name, :age, :secret]
+end
+
+defmodule EncoderTest.DerivedOnly do
+  @derive {RustyJson.Encoder, only: [:name, :age]}
+  defstruct [:name, :age, :secret]
+end
+
+defmodule EncoderTest.DerivedExcept do
+  @derive {RustyJson.Encoder, except: [:secret]}
+  defstruct [:name, :age, :secret]
+end
+
 defmodule EncoderTest do
   use ExUnit.Case
+
+  alias EncoderTest.{DerivedAll, DerivedExcept, DerivedOnly, Money}
 
   defmodule Container do
     defstruct [:payload]
@@ -72,14 +99,6 @@ defmodule EncoderTest do
     end
   end
 
-  describe "Formatting" do
-    test "pretty print" do
-      assert RustyJson.encode!([1], pretty: 2) == "[
-  1
-]"
-    end
-  end
-
   describe "Compression" do
     test "gzip compression" do
       assert zipped = RustyJson.encode!(%{"foo" => 5}, compress: :gzip)
@@ -121,11 +140,12 @@ defmodule EncoderTest do
       assert {:ok, _} = RustyJson.encode(%{a: 1, b: 2}, maps: :strict)
     end
 
-    test "strict mode detects duplicate atom and string keys" do
-      # Map with both atom :a and string "a" key - both serialize to "a"
+    test "strict mode detects keys that serialize to the same JSON key" do
+      # Atom :a and string "a" are different Elixir keys but both serialize to "a"
       map = %{:a => 1, "a" => 2}
       assert {:error, %RustyJson.EncodeError{message: msg}} = RustyJson.encode(map, maps: :strict)
       assert msg =~ "duplicate key"
+      assert msg =~ "a"
     end
 
     test "naive mode (default) allows duplicates" do
@@ -276,6 +296,172 @@ defmodule EncoderTest do
       # Structs without protocol impl work in non-protocol mode
       assert RustyJson.encode!(%Container{payload: "test"}, protocol: false) ==
                ~s({"payload":"test"})
+    end
+  end
+
+  describe "encode_to_iodata/2" do
+    test "returns {:ok, iodata} on success" do
+      assert {:ok, result} = RustyJson.encode_to_iodata(%{a: 1})
+      assert IO.iodata_to_binary(result) == ~s({"a":1})
+    end
+
+    test "returns {:error, _} on failure" do
+      assert {:error, _} = RustyJson.encode_to_iodata(self())
+    end
+
+    test "accepts encode options" do
+      assert {:ok, result} = RustyJson.encode_to_iodata(%{a: 1}, pretty: true)
+      assert IO.iodata_to_binary(result) =~ "\n"
+    end
+
+    test "matches encode/2 output" do
+      for term <- [%{a: 1}, [1, 2], "hello", 42, true, nil] do
+        {:ok, iodata} = RustyJson.encode_to_iodata(term)
+        {:ok, binary} = RustyJson.encode(term)
+        assert IO.iodata_to_binary(iodata) == binary
+      end
+    end
+  end
+
+  describe "encode_to_iodata!/2" do
+    test "returns iodata on success" do
+      result = RustyJson.encode_to_iodata!(%{a: 1})
+      assert IO.iodata_to_binary(result) == ~s({"a":1})
+    end
+
+    test "raises on failure" do
+      assert_raise Protocol.UndefinedError, fn ->
+        RustyJson.encode_to_iodata!(self())
+      end
+    end
+
+    test "matches encode!/2 output" do
+      for term <- [%{a: 1}, [1, 2], "hello", 42, true, nil] do
+        assert IO.iodata_to_binary(RustyJson.encode_to_iodata!(term)) ==
+                 RustyJson.encode!(term)
+      end
+    end
+  end
+
+  describe "lean mode with all struct types" do
+    test "lean mode with DateTime encodes as raw map" do
+      {:ok, dt, _} = DateTime.from_iso8601("2024-01-15T14:30:00Z")
+      encoded = RustyJson.encode!(dt, lean: true)
+      decoded = RustyJson.decode!(encoded)
+      assert is_map(decoded)
+      assert decoded["year"] == 2024
+      assert decoded["__struct__"] == nil
+    end
+
+    test "lean mode with Date encodes as raw map" do
+      encoded = RustyJson.encode!(~D[2024-01-15], lean: true)
+      decoded = RustyJson.decode!(encoded)
+      assert is_map(decoded)
+      assert decoded["year"] == 2024
+      assert decoded["__struct__"] == nil
+    end
+
+    test "lean mode with NaiveDateTime encodes as raw map" do
+      encoded = RustyJson.encode!(~N[2024-01-15 14:30:00], lean: true)
+      decoded = RustyJson.decode!(encoded)
+      assert is_map(decoded)
+      assert decoded["year"] == 2024
+    end
+
+    test "lean mode with URI encodes as raw map" do
+      uri = URI.parse("http://example.com/path")
+      encoded = RustyJson.encode!(uri, lean: true)
+      decoded = RustyJson.decode!(encoded)
+      assert is_map(decoded)
+      assert decoded["host"] == "example.com"
+    end
+  end
+
+  describe "custom Encoder implementation" do
+    test "custom defimpl encodes via protocol" do
+      money = %Money{amount: 42, currency: :USD}
+      json = RustyJson.encode!(money)
+      decoded = RustyJson.decode!(json)
+      assert decoded == %{"amount" => 42, "currency" => "USD"}
+    end
+
+    test "custom defimpl with protocol: false skips protocol" do
+      money = %Money{amount: 42, currency: :USD}
+      # protocol: false sends raw struct to NIF which encodes all fields
+      json = RustyJson.encode!(money, protocol: false)
+      decoded = RustyJson.decode!(json)
+      assert decoded["amount"] == 42
+      # NIF encodes atom currency as string atom name
+      assert decoded["currency"] == "USD"
+    end
+
+    test "custom defimpl with html_safe escaping" do
+      money = %Money{amount: 42, currency: :"<b>"}
+      json = RustyJson.encode!(money, escape: :html_safe)
+      # The currency "<b>" should be escaped in html_safe mode
+      assert json =~ "\\u003c"
+    end
+  end
+
+  describe "@derive RustyJson.Encoder" do
+    test "derive all fields" do
+      val = %DerivedAll{name: "Alice", age: 30, secret: "hidden"}
+      json = RustyJson.encode!(val)
+      decoded = RustyJson.decode!(json)
+      assert decoded["name"] == "Alice"
+      assert decoded["age"] == 30
+      assert decoded["secret"] == "hidden"
+    end
+
+    test "derive with :only" do
+      val = %DerivedOnly{name: "Alice", age: 30, secret: "hidden"}
+      json = RustyJson.encode!(val)
+      decoded = RustyJson.decode!(json)
+      assert decoded["name"] == "Alice"
+      assert decoded["age"] == 30
+      refute Map.has_key?(decoded, "secret")
+    end
+
+    test "derive with :except" do
+      val = %DerivedExcept{name: "Alice", age: 30, secret: "hidden"}
+      json = RustyJson.encode!(val)
+      decoded = RustyJson.decode!(json)
+      assert decoded["name"] == "Alice"
+      assert decoded["age"] == 30
+      refute Map.has_key?(decoded, "secret")
+    end
+  end
+
+  describe "special types raise Protocol.UndefinedError" do
+    test "PID raises" do
+      assert_raise Protocol.UndefinedError, fn ->
+        RustyJson.encode!(self())
+      end
+    end
+
+    test "Reference raises" do
+      assert_raise Protocol.UndefinedError, fn ->
+        RustyJson.encode!(make_ref())
+      end
+    end
+
+    test "Port raises" do
+      # Get a port from an open process
+      port = Port.open({:spawn, "echo"}, [:binary])
+
+      try do
+        assert_raise Protocol.UndefinedError, fn ->
+          RustyJson.encode!(port)
+        end
+      after
+        Port.close(port)
+      end
+    end
+
+    test "Function raises" do
+      assert_raise Protocol.UndefinedError, fn ->
+        RustyJson.encode!(fn -> :ok end)
+      end
     end
   end
 end

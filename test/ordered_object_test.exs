@@ -143,11 +143,23 @@ defmodule OrderedObjectTest do
   end
 
   describe "pop removes all matching keys" do
-    test "pop removes all duplicate keys" do
+    test "pop returns first value and removes ALL occurrences" do
       obj = %RustyJson.OrderedObject{values: [{"a", 1}, {"b", 2}, {"a", 3}]}
       {val, new_obj} = Access.pop(obj, "a")
+      # Returns the first matching value
       assert val == 1
+      # Removes ALL occurrences of the key, not just the first
       assert new_obj.values == [{"b", 2}]
+      # Verify no "a" keys remain
+      assert :error = Access.fetch(new_obj, "a")
+    end
+
+    test "pop with three duplicate keys removes all" do
+      obj = %RustyJson.OrderedObject{values: [{"x", 1}, {"x", 2}, {"y", 3}, {"x", 4}]}
+      {val, new_obj} = Access.pop(obj, "x")
+      assert val == 1
+      assert new_obj.values == [{"y", 3}]
+      assert :error = Access.fetch(new_obj, "x")
     end
   end
 
@@ -192,6 +204,32 @@ defmodule OrderedObjectTest do
       json = ~s({"hello":"world","foo":"bar"})
       result = RustyJson.decode!(json, objects: :ordered_objects, keys: &String.upcase/1)
       assert %RustyJson.OrderedObject{values: [{"HELLO", "world"}, {"FOO", "bar"}]} = result
+    end
+  end
+
+  describe "intern + ordered_objects combination" do
+    test "keys: :intern with objects: :ordered_objects" do
+      json = ~s([{"b":2,"a":1},{"b":4,"a":3}])
+      result = RustyJson.decode!(json, keys: :intern, objects: :ordered_objects)
+      assert [obj1, obj2] = result
+      assert %RustyJson.OrderedObject{values: [{"b", 2}, {"a", 1}]} = obj1
+      assert %RustyJson.OrderedObject{values: [{"b", 4}, {"a", 3}]} = obj2
+    end
+  end
+
+  describe "ordered object with pretty printing" do
+    test "pretty print via Formatter preserves key order" do
+      obj = %RustyJson.OrderedObject{values: [{"z", 1}, {"a", 2}]}
+      compact = RustyJson.encode!(obj)
+      pretty = RustyJson.Formatter.pretty_print(compact)
+      # Pretty-printed output should contain both keys
+      assert pretty =~ "\"z\""
+      assert pretty =~ "\"a\""
+      # z should appear before a in the output
+      z_pos = :binary.match(pretty, "\"z\"") |> elem(0)
+      a_pos = :binary.match(pretty, "\"a\"") |> elem(0)
+      assert z_pos < a_pos
+      assert pretty =~ "\n"
     end
   end
 

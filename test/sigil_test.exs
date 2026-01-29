@@ -46,6 +46,18 @@ defmodule SigilTest do
     end
   end
 
+  describe "~j sigil with multiple modifiers" do
+    test "atoms + copy modifiers" do
+      result = ~j({"x": 1})ac
+      assert result == %{x: 1}
+    end
+
+    test "atoms! + reference modifiers" do
+      result = ~j({"x": 1})Ar
+      assert result == %{x: 1}
+    end
+  end
+
   describe "~J sigil" do
     test "decodes JSON at compile time" do
       result = ~J({"name": "Alice"})
@@ -55,6 +67,30 @@ defmodule SigilTest do
     test "with atoms modifier" do
       result = ~J({"y": 2})a
       assert result == %{y: 2}
+    end
+
+    test "with atoms! modifier" do
+      result = ~J({"y": 2})A
+      assert result == %{y: 2}
+    end
+
+    test "with reference modifier" do
+      result = ~J({"y": 2})r
+      assert result == %{"y" => 2}
+    end
+
+    test "with copy modifier" do
+      result = ~J({"y": 2})c
+      assert result == %{"y" => 2}
+    end
+
+    test "unknown modifier raises ArgumentError" do
+      assert_raise ArgumentError, ~r/unknown sigil modifier/, fn ->
+        Code.eval_string("""
+        import RustyJson.Sigil
+        ~J({"a":1})z
+        """)
+      end
     end
   end
 end

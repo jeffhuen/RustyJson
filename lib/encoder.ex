@@ -146,31 +146,40 @@ defimpl RustyJson.Encoder, for: Any do
   @moduledoc false
 
   defmacro __deriving__(module, _struct, opts) do
-    fields = fields_to_encode(opts)
+    only = Keyword.get(opts, :only)
+    except = Keyword.get(opts, :except)
 
-    quote do
-      defimpl RustyJson.Encoder, for: unquote(module) do
-        def encode(struct, opts) do
-          Map.take(struct, unquote(fields))
-          |> RustyJson.Encoder.encode(opts)
-        end
-      end
-    end
-  end
-
-  defp fields_to_encode(opts) do
-    cond do
-      only = Keyword.get(opts, :only) ->
-        only
-
-      except = Keyword.get(opts, :except) ->
+    case {only, except} do
+      {fields, nil} when is_list(fields) ->
         quote do
-          Map.keys(%unquote(opts[:struct]){}) -- [:__struct__ | unquote(except)]
+          defimpl RustyJson.Encoder, for: unquote(module) do
+            def encode(struct, opts) do
+              Map.take(struct, unquote(fields))
+              |> RustyJson.Encoder.encode(opts)
+            end
+          end
         end
 
-      true ->
+      {nil, fields} when is_list(fields) ->
+        excluded = [:__struct__ | fields]
+
         quote do
-          Map.keys(%unquote(opts[:struct]){}) -- [:__struct__]
+          defimpl RustyJson.Encoder, for: unquote(module) do
+            def encode(struct, opts) do
+              Map.drop(struct, unquote(excluded))
+              |> RustyJson.Encoder.encode(opts)
+            end
+          end
+        end
+
+      {nil, nil} ->
+        quote do
+          defimpl RustyJson.Encoder, for: unquote(module) do
+            def encode(struct, opts) do
+              Map.from_struct(struct)
+              |> RustyJson.Encoder.encode(opts)
+            end
+          end
         end
     end
   end

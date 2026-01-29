@@ -62,6 +62,6 @@ end
 
 defimpl RustyJson.Encoder, for: RustyJson.Fragment do
   def encode(%RustyJson.Fragment{encode: encode}, opts) when is_function(encode, 1) do
-    %RustyJson.Fragment{encode: fn _ -> encode.(opts) end}
+    %RustyJson.Fragment{encode: encode.(opts)}
   end
 end
