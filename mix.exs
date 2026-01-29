@@ -32,7 +32,8 @@ defmodule RustyJson.MixProject do
       {:decimal, "~> 2.0", optional: true},
       {:ex_doc, "~> 0.30", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:jason, "~> 1.4"}
     ]
   end
 

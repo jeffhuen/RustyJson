@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
-This release achieves full Jason API parity. Three changes require action when upgrading:
+This release aims to achieve full Jason API parity. Three changes require action when upgrading:
 
 **1. `decode/2` returns `%DecodeError{}` instead of a string**
 

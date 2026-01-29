@@ -399,10 +399,10 @@ defmodule RustyJson do
 
     _ = opts
 
-    # Build encoder opts to pass through the protocol chain.
-    # Fragment/Helper function-based encoders need these to encode values correctly.
-    # Use Keyword list for compatibility with Jason/elixir idioms.
-    encoder_opts = [escape: escape, maps: maps_mode]
+    # Build opaque encoder opts matching Jason.Encode.opts() format.
+    # This is a {escape_fn, encode_map_fn} tuple that flows through the
+    # Encoder protocol and into Encode functions for full Jason compatibility.
+    encoder_opts = RustyJson.Encode.build_opts(escape, maps_mode)
 
     # With protocol: true, preprocess with Elixir Encoder protocol
     # Otherwise, send directly to Rust for maximum performance

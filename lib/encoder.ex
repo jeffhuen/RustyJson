@@ -59,12 +59,14 @@ defprotocol RustyJson.Encoder do
   @typedoc """
   Encoder options passed from `RustyJson.encode!/2`.
 
-  Contains encoding context as a keyword list (e.g. `[escape: :html_safe, maps: :naive]`).
-  Most protocol implementations can ignore this parameter since encoding details
-  are handled by the Rust NIF. Function-based `Fragment` and `OrderedObject`
-  implementations use these options to propagate encoding context to nested values.
+  This is an opaque value matching `RustyJson.Encode.opts()`. Pass it as-is to
+  `RustyJson.Encode` functions (`value/2`, `map/2`, `string/2`, etc.) inside
+  custom encoder implementations. Do not inspect or destructure this value.
+
+  Matches `Jason.Encoder.opts()` — custom encoder implementations that call
+  `Jason.Encode.map(data, opts)` work identically with `RustyJson.Encode.map(data, opts)`.
   """
-  @type opts :: keyword() | map()
+  @type opts :: RustyJson.Encode.opts()
 
   @doc """
   Converts `value` to a JSON-encodable type.
@@ -75,7 +77,7 @@ defprotocol RustyJson.Encoder do
   use opts to propagate encoding settings to nested `encode!` calls.
   """
   @spec encode(t, opts()) :: term
-  def encode(value, opts \\ [])
+  def encode(value, opts)
 end
 
 # For maps, lists, and tuples - only recurse if values might need encoding.

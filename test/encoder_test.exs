@@ -193,7 +193,7 @@ defmodule EncoderTest do
     test "non-struct unknown types raise with protocol: true" do
       # PID cannot be encoded via protocol
       assert_raise Protocol.UndefinedError, fn ->
-        RustyJson.Encoder.encode(self())
+        RustyJson.Encoder.encode(self(), RustyJson.Encode.opts())
       end
     end
   end
@@ -202,20 +202,19 @@ defmodule EncoderTest do
     test "function-based fragment receives encoder opts" do
       fragment = %RustyJson.Fragment{
         encode: fn opts ->
-          # opts should be a keyword list with escape and maps keys
-          escape = Keyword.get(opts, :escape, :json)
-
-          if escape == :html_safe do
-            ~s({"url":"a\\/b"})
-          else
-            ~s({"url":"a/b"})
-          end
+          # opts is the opaque {escape_fn, encode_map_fn} tuple from RustyJson.Encode
+          # Use Encode functions to test that escape context flows through
+          ["{\"url\":", RustyJson.Encode.string("a/b", opts), "}"]
         end
       }
 
-      # With html_safe, the fragment function should receive the escape opt
-      assert RustyJson.encode!(fragment, escape: :html_safe) == ~s({"url":"a\\/b"})
-      assert RustyJson.encode!(fragment, escape: :json) == ~s({"url":"a/b"})
+      # With html_safe, the Encode.string call should escape /
+      result_html = RustyJson.encode!(fragment, escape: :html_safe)
+      assert result_html =~ "\\/"
+
+      # With json mode, / should not be escaped
+      result_json = RustyJson.encode!(fragment, escape: :json)
+      refute result_json =~ "\\/"
     end
 
     test "function-based fragment works with protocol: false" do
@@ -229,6 +228,36 @@ defmodule EncoderTest do
     test "iodata-based fragment passes through unchanged" do
       fragment = RustyJson.Fragment.new(~s({"static":"json"}))
       assert RustyJson.encode!(fragment) == ~s({"static":"json"})
+    end
+
+    test "new/1 with iodata wraps in function (matching Jason)" do
+      fragment = RustyJson.Fragment.new(~s({"a":1}))
+      assert is_function(fragment.encode, 1)
+      assert fragment.encode.([]) == ~s({"a":1})
+    end
+
+    test "new/1 with iolist wraps in function" do
+      fragment = RustyJson.Fragment.new(["{", "}", []])
+      assert is_function(fragment.encode, 1)
+      assert fragment.encode.([]) == ["{", "}", []]
+    end
+
+    test "new/1 with function stores function directly" do
+      fun = fn _opts -> ~s({"b":2}) end
+      fragment = RustyJson.Fragment.new(fun)
+      assert fragment.encode == fun
+    end
+
+    test "new!/1 wraps validated iodata in function" do
+      fragment = RustyJson.Fragment.new!(~s({"valid":true}))
+      assert is_function(fragment.encode, 1)
+      assert fragment.encode.([]) == ~s({"valid":true})
+    end
+
+    test "new!/1 raises on invalid JSON" do
+      assert_raise RustyJson.DecodeError, fn ->
+        RustyJson.Fragment.new!("not valid json")
+      end
     end
   end
 

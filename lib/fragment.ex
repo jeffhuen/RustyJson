@@ -28,19 +28,22 @@ defmodule RustyJson.Fragment do
   and must return iodata.
   """
 
-  @type t :: %__MODULE__{encode: iodata() | (keyword() -> iodata())}
+  @type t :: %__MODULE__{encode: (term() -> iodata())}
 
   defstruct [:encode]
 
   @doc """
-  Creates a new fragment from pre-encoded JSON.
+  Creates a new fragment from pre-encoded JSON iodata or a function.
+
+  When given iodata, it is wrapped in a function for uniform internal
+  representation, matching Jason's behavior. When given a 1-arity function,
+  the function receives encoder options (a keyword list) and must return iodata.
   """
-  @spec new(iodata()) :: t()
+  @spec new(iodata() | (term() -> iodata())) :: t()
   def new(data) when is_binary(data) or is_list(data) do
-    %__MODULE__{encode: data}
+    %__MODULE__{encode: fn _ -> data end}
   end
 
-  @spec new((term() -> iodata())) :: t()
   def new(encode) when is_function(encode, 1) do
     %__MODULE__{encode: encode}
   end
@@ -48,19 +51,17 @@ defmodule RustyJson.Fragment do
   @doc """
   Creates a validated fragment, ensuring the input is valid JSON.
 
-  Raises an error if the input is not valid JSON.
+  Raises `RustyJson.DecodeError` if the input is not valid JSON.
   """
   @spec new!(iodata()) :: t()
   def new!(data) do
     _ = RustyJson.decode!(IO.iodata_to_binary(data))
-    %__MODULE__{encode: data}
+    %__MODULE__{encode: fn _ -> data end}
   end
 end
 
 defimpl RustyJson.Encoder, for: RustyJson.Fragment do
-  def encode(%RustyJson.Fragment{encode: encode} = fragment, opts) when is_function(encode, 1) do
-    %{fragment | encode: encode.(opts)}
+  def encode(%RustyJson.Fragment{encode: encode}, opts) when is_function(encode, 1) do
+    %RustyJson.Fragment{encode: fn _ -> encode.(opts) end}
   end
-
-  def encode(%RustyJson.Fragment{} = fragment, _opts), do: fragment
 end

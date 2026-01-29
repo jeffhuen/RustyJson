@@ -90,8 +90,6 @@ defmodule RustyJson.Helpers do
   def __json_map__(encoded_keys, values) do
     %RustyJson.Fragment{
       encode: fn opts ->
-        encode_opts = opts_to_keyword(opts)
-
         [
           "{"
           | encoded_keys
@@ -99,7 +97,7 @@ defmodule RustyJson.Helpers do
             |> Enum.with_index()
             |> Enum.flat_map(fn {{key_json, value}, idx} ->
               prefix = if idx > 0, do: [","], else: []
-              prefix ++ [key_json, ":", RustyJson.encode!(value, encode_opts)]
+              prefix ++ [key_json, ":", RustyJson.Encode.value(value, opts)]
             end)
         ] ++ ["}"]
       end
@@ -122,8 +120,6 @@ defmodule RustyJson.Helpers do
 
     %RustyJson.Fragment{
       encode: fn opts ->
-        encode_opts = opts_to_keyword(opts)
-
         [
           "{"
           | encoded_key_pairs
@@ -131,17 +127,12 @@ defmodule RustyJson.Helpers do
             |> Enum.with_index()
             |> Enum.flat_map(fn {{{key_json, _}, value}, idx} ->
               prefix = if idx > 0, do: [","], else: []
-              prefix ++ [key_json, ":", RustyJson.encode!(value, encode_opts)]
+              prefix ++ [key_json, ":", RustyJson.Encode.value(value, opts)]
             end)
         ] ++ ["}"]
       end
     }
   end
-
-  # Convert encoder opts (map or keyword list) to keyword list for RustyJson.encode!
-  defp opts_to_keyword(%{} = opts), do: Enum.to_list(opts)
-  defp opts_to_keyword(opts) when is_list(opts), do: opts
-  defp opts_to_keyword(_), do: []
 
   defp validate_json_key!(key_str) do
     if not String.match?(key_str, ~r/^[\x20-\x21\x23-\x2E\x30-\x5B\x5D-\x7E]*$/) do

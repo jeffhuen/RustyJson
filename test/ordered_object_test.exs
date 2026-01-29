@@ -103,6 +103,54 @@ defmodule OrderedObjectTest do
     end
   end
 
+  describe "get_and_update edge cases" do
+    test "get_and_update with :pop removes key" do
+      obj = %RustyJson.OrderedObject{values: [{"a", 1}, {"b", 2}, {"c", 3}]}
+      {old, new_obj} = Access.get_and_update(obj, "b", fn _ -> :pop end)
+      assert old == 2
+      assert new_obj.values == [{"a", 1}, {"c", 3}]
+    end
+
+    test "get_and_update with missing key inserts at beginning" do
+      obj = %RustyJson.OrderedObject{values: [{"a", 1}]}
+      {old, new_obj} = Access.get_and_update(obj, "b", fn nil -> {nil, 42} end)
+      assert old == nil
+      assert new_obj.values == [{"b", 42}, {"a", 1}]
+    end
+
+    test "get_and_update with missing key and :pop" do
+      obj = %RustyJson.OrderedObject{values: [{"a", 1}]}
+      {old, new_obj} = Access.get_and_update(obj, "missing", fn nil -> :pop end)
+      assert old == nil
+      assert new_obj.values == [{"a", 1}]
+    end
+
+    test "get_and_update raises on invalid return" do
+      obj = %RustyJson.OrderedObject{values: [{"a", 1}]}
+
+      assert_raise RuntimeError, ~r/must return a two-element tuple or :pop/, fn ->
+        Access.get_and_update(obj, "a", fn _ -> :bad end)
+      end
+    end
+
+    test "get_and_update raises on invalid return for missing key" do
+      obj = %RustyJson.OrderedObject{values: [{"a", 1}]}
+
+      assert_raise RuntimeError, ~r/must return a two-element tuple or :pop/, fn ->
+        Access.get_and_update(obj, "missing", fn _ -> :bad end)
+      end
+    end
+  end
+
+  describe "pop removes all matching keys" do
+    test "pop removes all duplicate keys" do
+      obj = %RustyJson.OrderedObject{values: [{"a", 1}, {"b", 2}, {"a", 3}]}
+      {val, new_obj} = Access.pop(obj, "a")
+      assert val == 1
+      assert new_obj.values == [{"b", 2}]
+    end
+  end
+
   describe "encode round-trip" do
     test "ordered object encodes back preserving order" do
       obj = %RustyJson.OrderedObject{values: [{"b", 2}, {"a", 1}]}
