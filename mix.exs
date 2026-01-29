@@ -83,9 +83,19 @@ defmodule RustyJson.MixProject do
       extras: [
         "README.md",
         "CHANGELOG.md",
-        "LICENSE",
         "docs/ARCHITECTURE.md",
-        "docs/BENCHMARKS.md"
+        "docs/BENCHMARKS.md",
+        "LICENSE"
+      ],
+      groups_for_extras: [
+        Overview: ["README.md", "CHANGELOG.md"],
+        Internals: ["docs/ARCHITECTURE.md", "docs/BENCHMARKS.md"]
+      ],
+      groups_for_modules: [
+        Encoding: [RustyJson, RustyJson.Encoder, RustyJson.Encode, RustyJson.Fragment, RustyJson.Helpers],
+        Decoding: [RustyJson.Decoder, RustyJson.OrderedObject],
+        Formatting: [RustyJson.Formatter, RustyJson.Sigil],
+        Errors: [RustyJson.EncodeError, RustyJson.DecodeError]
       ]
     ]
   end
