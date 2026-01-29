@@ -280,9 +280,9 @@ This is because:
 
 | Dataset | RustyJson | Jason | Speedup |
 |---------|-----------|-------|---------|
-| canada.json (2.1MB) | 14 ms | 48 ms | 3.4x faster |
-| citm_catalog.json (1.6MB) | 6 ms | 14 ms | 2.5x faster |
-| twitter.json (617KB) | 4 ms | 9 ms | 2.3x faster |
+| canada.json (2.1MB) roundtrip | 14 ms | 48 ms | 3.4x faster |
+| citm_catalog.json (1.6MB) roundtrip | 6 ms | 14 ms | 2.5x faster |
+| twitter.json (617KB) roundtrip | 4 ms | 9 ms | 2.3x faster |
 
 Real-world API responses show better results than synthetic benchmarks because they have more complex nested structures and mixed data types.
 
@@ -290,10 +290,36 @@ See [BENCHMARKS.md](BENCHMARKS.md) for detailed methodology.
 
 ## Protocol Architecture
 
-### Default Path (Maximum Performance)
+### Default Path (Protocol Enabled)
 
 ```
 RustyJson.encode!(data)
+        │
+        ▼
+RustyJson.Encoder.encode/2
+        │
+        ▼
+  Protocol dispatch
+  (Map, List, Tuple, Fragment, Any, custom)
+        │
+        ▼
+  Resolve function-based Fragments
+        │
+        ▼
+    Rust NIF
+```
+
+By default (`protocol: true`), encoding goes through the `RustyJson.Encoder` protocol, matching Jason's behavior. Built-in type implementations (strings, numbers, atoms, maps, lists) pass through unchanged, so overhead is minimal. Custom `@derive` or `defimpl` implementations preprocess data before the NIF.
+
+Structs without an explicit `RustyJson.Encoder` implementation raise `Protocol.UndefinedError`. RustyJson is a complete Jason replacement and has no runtime dependency on Jason.
+
+### Bypass Path (Maximum Performance)
+
+```
+RustyJson.encode!(data, protocol: false)
+        │
+        ▼
+  Resolve function-based Fragments
         │
         ▼
     Rust NIF
@@ -303,29 +329,7 @@ RustyJson.encode!(data)
   (no Elixir preprocessing)
 ```
 
-No Elixir code runs during encoding. The Rust NIF walks the term tree directly.
-
-### Protocol Path (Custom Encoding)
-
-```
-RustyJson.encode!(data, protocol: true)
-        │
-        ▼
-RustyJson.Encoder.encode/1
-        │
-        ▼
-  Protocol dispatch
-  (Map, List, Tuple, Any, custom)
-        │
-        ▼
-    Rust NIF
-```
-
-When `protocol: true`:
-1. Elixir's protocol system preprocesses the data
-2. Custom `RustyJson.Encoder` implementations are called
-3. Structs without implementations are converted via `Map.from_struct()`
-4. Preprocessed data is sent to Rust
+With `protocol: false`, the Rust NIF walks the term tree directly. Function-based Fragments (from `json_map`, `OrderedObject`, etc.) are still resolved in Elixir before sending to the NIF.
 
 ## Decoding Architecture
 
@@ -396,13 +400,15 @@ This is critical for:
 
 4. **Predictable performance**: Single allocation is easier to reason about than many small ones.
 
-### Why Optional Protocol?
+### Why Protocol-by-Default with Opt-Out?
 
-1. **Maximum default performance**: Most data doesn't need custom encoding.
+1. **Jason compatibility**: Jason always dispatches through its Encoder protocol. Using `protocol: true` as the default ensures drop-in behavior.
 
-2. **Explicit opt-in**: Users consciously trade performance for flexibility.
+2. **Minimal overhead for built-in types**: Primitive types (strings, numbers, atoms) have pass-through implementations that add negligible cost.
 
-3. **Custom encoding**: Supports `@derive RustyJson.Encoder` for struct field filtering.
+3. **Custom encoding**: Supports `@derive RustyJson.Encoder` for struct field filtering, and falls back to `Jason.Encoder` for interop.
+
+4. **Opt-out for performance**: Use `protocol: false` to bypass the protocol entirely when you have no custom encoders and want maximum throughput.
 
 ### Why 128-Level Depth Limit?
 
@@ -483,16 +489,16 @@ RustyJson.decode("[1, 2,]")
 # => {:error, "Expected value at position 6"}
 ```
 
-**Consistent `{:error, reason}` returns:**
+**Structured error returns:**
 
-`encode/1` and `decode/1` always return error tuples for invalid input—no exceptions:
+`encode/2` and `decode/2` return structured error structs for detailed diagnostics:
 
 ```elixir
 RustyJson.encode(%{{:a, :b} => 1})
-# => {:error, "Map key must be atom, string, or integer"}
+# => {:error, %RustyJson.EncodeError{message: "Map key must be atom, string, or integer"}}
 
-RustyJson.encode(self())  # PIDs aren't JSON-encodable
-# => {:error, "Unable to encode value at path: root"}
+RustyJson.decode("invalid")
+# => {:error, %RustyJson.DecodeError{message: "...", position: 0, data: "invalid", token: "invalid"}}
 ```
 
 This makes error handling predictable—pattern match on results without needing `try/rescue`.

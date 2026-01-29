@@ -1,6 +1,7 @@
 use crate::decimal::try_format_decimal;
 use rustler::types::{ListIterator, MapIterator};
 use rustler::{Binary, Term, TermType};
+use std::collections::HashSet;
 use std::io::Write;
 
 /// Escape mode for JSON string encoding
@@ -31,35 +32,59 @@ impl EscapeMode {
     }
 }
 
+/// Shared formatting context holding heap-allocated separator strings.
+/// Referenced by `FormatOptions` to avoid cloning on every `nested()` call.
+pub struct FormatContext {
+    pub line_separator: Vec<u8>,
+    pub after_colon: Vec<u8>,
+    pub indent: Vec<u8>,
+    pub strict_keys: bool,
+}
+
+impl Default for FormatContext {
+    fn default() -> Self {
+        Self {
+            line_separator: b"\n".to_vec(),
+            after_colon: b" ".to_vec(),
+            indent: b"  ".to_vec(),
+            strict_keys: false,
+        }
+    }
+}
+
 /// Formatting options for JSON output
 #[derive(Clone, Copy)]
-pub struct FormatOptions {
-    /// Number of spaces for indentation (0 = compact)
-    pub indent: u32,
+pub struct FormatOptions<'ctx> {
+    /// Whether pretty printing is enabled
+    pretty: bool,
     /// Current indentation level (internal use)
     depth: u32,
     /// If true, skip special struct handling (Date, Time, etc.)
     lean: bool,
     /// Escape mode for strings
     escape: EscapeMode,
+    /// Shared context with heap-allocated data
+    ctx: &'ctx FormatContext,
 }
 
-impl FormatOptions {
-    pub fn compact() -> Self {
+impl<'ctx> FormatOptions<'ctx> {
+    pub fn compact(ctx: &'ctx FormatContext) -> Self {
         Self {
-            indent: 0,
+            pretty: false,
             depth: 0,
             lean: false,
             escape: EscapeMode::Json,
+            ctx,
         }
     }
 
-    pub fn pretty(indent: u32) -> Self {
+    pub fn pretty(ctx: &'ctx FormatContext) -> Self {
         Self {
-            indent,
+            pretty: true,
             depth: 0,
             lean: false,
             escape: EscapeMode::Json,
+            ctx,
         }
     }
 
@@ -75,12 +100,17 @@ impl FormatOptions {
 
     #[inline(always)]
     fn is_pretty(&self) -> bool {
-        self.indent > 0
+        self.pretty
     }
 
     #[inline(always)]
     fn is_lean(&self) -> bool {
         self.lean
+    }
+
+    #[inline(always)]
+    pub fn strict_keys(&self) -> bool {
+        self.ctx.strict_keys
     }
 
     #[inline(always)]
@@ -91,28 +121,21 @@ impl FormatOptions {
     #[inline(always)]
     fn nested(&self) -> Self {
         Self {
-            indent: self.indent,
+            pretty: self.pretty,
             depth: self.depth + 1,
             lean: self.lean,
             escape: self.escape,
+            ctx: self.ctx,
         }
     }
 
     #[inline(always)]
     fn write_newline<W: Write>(&self, writer: &mut W) -> Result<(), std::io::Error> {
         if self.is_pretty() {
-            // Pre-computed spaces buffer for common indentation levels (up to 64 spaces)
-            const SPACES: &[u8; 64] =
-                b"                                                                ";
-            writer.write_all(b"\n")?;
-            let spaces = (self.depth * self.indent) as usize;
-            if spaces <= 64 {
-                writer.write_all(&SPACES[..spaces])?;
-            } else {
-                // Fallback for deep nesting
-                for _ in 0..spaces {
-                    writer.write_all(b" ")?;
-                }
+            writer.write_all(&self.ctx.line_separator)?;
+            let indent = &self.ctx.indent;
+            for _ in 0..self.depth {
+                writer.write_all(indent)?;
             }
         }
         Ok(())
@@ -121,7 +144,7 @@ impl FormatOptions {
     #[inline(always)]
     fn write_space<W: Write>(&self, writer: &mut W) -> Result<(), std::io::Error> {
         if self.is_pretty() {
-            writer.write_all(b" ")?;
+            writer.write_all(&self.ctx.after_colon)?;
         }
         Ok(())
     }
@@ -130,11 +153,25 @@ impl FormatOptions {
 /// Maximum nesting depth to prevent stack overflow
 const MAX_DEPTH: u32 = 128;
 
+/// Check for duplicate keys in strict mode. Returns an error if the key was already seen.
+#[inline]
+fn check_strict_key(seen: &mut Option<HashSet<String>>, key: &str) -> Result<(), std::io::Error> {
+    if let Some(ref mut set) = seen {
+        if !set.insert(key.to_string()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("duplicate key: {:?}", key),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Write a term directly to JSON, bypassing serde.
 pub fn term_to_json<W: Write>(
     term: Term,
     writer: &mut W,
-    opts: FormatOptions,
+    opts: FormatOptions<'_>,
 ) -> Result<(), std::io::Error> {
     if opts.depth > MAX_DEPTH {
         return Err(std::io::Error::new(
@@ -162,7 +199,7 @@ pub fn term_to_json<W: Write>(
 fn write_atom<W: Write>(
     term: Term,
     writer: &mut W,
-    opts: FormatOptions,
+    opts: FormatOptions<'_>,
 ) -> Result<(), std::io::Error> {
     if let Ok(s) = term.atom_to_string() {
         match s.as_str() {
@@ -184,7 +221,7 @@ fn write_atom<W: Write>(
 fn write_binary<W: Write>(
     term: Term,
     writer: &mut W,
-    opts: FormatOptions,
+    opts: FormatOptions<'_>,
 ) -> Result<(), std::io::Error> {
     // Use Binary for zero-copy access to bytes
     if let Ok(binary) = term.decode::<Binary>() {
@@ -259,7 +296,7 @@ fn write_float<W: Write>(term: Term, writer: &mut W) -> Result<(), std::io::Erro
 fn write_list<W: Write>(
     term: Term,
     writer: &mut W,
-    opts: FormatOptions,
+    opts: FormatOptions<'_>,
 ) -> Result<(), std::io::Error> {
     // Use ListIterator to avoid allocating a Vec (get via decode)
     let iter: ListIterator = term.decode().map_err(|_| {
@@ -295,7 +332,7 @@ fn write_list<W: Write>(
 fn write_map<W: Write>(
     term: Term,
     writer: &mut W,
-    opts: FormatOptions,
+    opts: FormatOptions<'_>,
 ) -> Result<(), std::io::Error> {
     // Check for special struct types first (unless lean mode)
     if !opts.is_lean() {
@@ -310,6 +347,8 @@ fn write_map<W: Write>(
 
     let nested = opts.nested();
     let escape = opts.escape_mode();
+    let strict = opts.strict_keys();
+    let mut seen_keys: Option<HashSet<String>> = if strict { Some(HashSet::new()) } else { None };
 
     // We don't know if map is empty until we iterate, so track first entry
     let mut started = false;
@@ -321,6 +360,9 @@ fn write_map<W: Write>(
                 if key_str == "__struct__" {
                     continue;
                 }
+
+                check_strict_key(&mut seen_keys, &key_str)?;
+
                 // Write opening brace on first non-filtered entry
                 if !started {
                     writer.write_all(b"{")?;
@@ -351,6 +393,7 @@ fn write_map<W: Write>(
                 TermType::Binary => {
                     if let Ok(binary) = key.decode::<Binary>() {
                         if let Ok(s) = std::str::from_utf8(binary.as_slice()) {
+                            check_strict_key(&mut seen_keys, s)?;
                             write_json_string(s, writer, escape)?;
                         } else {
                             return Err(std::io::Error::new(
@@ -369,7 +412,9 @@ fn write_map<W: Write>(
                     // Convert integer keys to strings
                     if let Ok(n) = key.decode::<i64>() {
                         let mut buf = itoa::Buffer::new();
-                        write_json_string(buf.format(n), writer, escape)?;
+                        let key_str = buf.format(n);
+                        check_strict_key(&mut seen_keys, key_str)?;
+                        write_json_string(key_str, writer, escape)?;
                     } else {
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::InvalidData,
@@ -406,7 +451,7 @@ fn write_map<W: Write>(
 fn try_format_special_struct<W: Write>(
     term: &Term,
     writer: &mut W,
-    opts: FormatOptions,
+    opts: FormatOptions<'_>,
 ) -> Result<Option<()>, std::io::Error> {
     if term.get_type() != TermType::Map {
         return Ok(None);
@@ -725,7 +770,7 @@ fn try_format_uri(term: &Term) -> Option<String> {
 fn try_format_mapset<W: Write>(
     term: &Term,
     writer: &mut W,
-    opts: FormatOptions,
+    opts: FormatOptions<'_>,
 ) -> Result<Option<()>, std::io::Error> {
     let env = term.get_env();
     let t = *term;
@@ -771,7 +816,7 @@ fn try_format_mapset<W: Write>(
 fn try_format_range<W: Write>(
     term: &Term,
     writer: &mut W,
-    opts: FormatOptions,
+    opts: FormatOptions<'_>,
 ) -> Result<Option<()>, std::io::Error> {
     let env = term.get_env();
     let t = *term;
@@ -879,7 +924,7 @@ where
 fn write_tuple<W: Write>(
     term: Term,
     writer: &mut W,
-    opts: FormatOptions,
+    opts: FormatOptions<'_>,
 ) -> Result<(), std::io::Error> {
     let items = rustler::types::tuple::get_tuple(term).map_err(|_| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, "Failed to decode tuple")
@@ -979,6 +1024,7 @@ fn write_json_string_escaped<W: Write>(
                 '<' if escape_mode == EscapeMode::HtmlSafe => writer.write_all(b"\\u003c")?,
                 '>' if escape_mode == EscapeMode::HtmlSafe => writer.write_all(b"\\u003e")?,
                 '&' if escape_mode == EscapeMode::HtmlSafe => writer.write_all(b"\\u0026")?,
+                '/' if escape_mode == EscapeMode::HtmlSafe => writer.write_all(b"\\/")?,
                 // JavaScript-safe: escape line/paragraph separators
                 '\u{2028}'
                     if escape_mode == EscapeMode::JavaScriptSafe

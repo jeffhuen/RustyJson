@@ -4,7 +4,7 @@ defmodule SafetyTest do
   describe "deep nesting" do
     test "encoder rejects nesting beyond 128 levels" do
       deep_list = Enum.reduce(1..200, 1, fn _, acc -> [acc] end)
-      assert {:error, msg} = RustyJson.encode(deep_list)
+      assert {:error, %RustyJson.EncodeError{message: msg}} = RustyJson.encode(deep_list)
       assert msg =~ "Nesting depth"
     end
 
@@ -32,20 +32,20 @@ defmodule SafetyTest do
   end
 
   describe "special types with protocol mode" do
-    test "MapSet encodes as array with protocol: true" do
+    test "MapSet raises UndefinedError" do
       set = MapSet.new([1, 2, 3])
-      json = RustyJson.encode!(set, protocol: true)
-      decoded = RustyJson.decode!(json)
-      assert is_list(decoded)
-      assert Enum.sort(decoded) == [1, 2, 3]
+
+      assert_raise Protocol.UndefinedError, fn ->
+        RustyJson.encode!(set)
+      end
     end
 
-    test "Range encodes correctly with protocol: true" do
+    test "Range raises UndefinedError" do
       range = 1..10
-      json = RustyJson.encode!(range, protocol: true)
-      decoded = RustyJson.decode!(json)
-      assert decoded["first"] == 1
-      assert decoded["last"] == 10
+
+      assert_raise Protocol.UndefinedError, fn ->
+        RustyJson.encode!(range)
+      end
     end
   end
 end

@@ -79,7 +79,7 @@ defmodule JsonTestSuiteTest do
       failures =
         results
         |> Enum.filter(fn {_file, result} -> result != :ok end)
-        |> Enum.map(fn {file, {:error, reason}} -> "#{file}: #{reason}" end)
+        |> Enum.map(fn {file, {:error, reason}} -> "#{file}: #{Exception.message(reason)}" end)
 
       assert failures == [],
              "Failed to accept valid JSON:\n#{Enum.join(failures, "\n")}"
@@ -94,7 +94,7 @@ defmodule JsonTestSuiteTest do
       failures =
         results
         |> Enum.filter(fn {_file, result} -> result != :ok end)
-        |> Enum.map(fn {file, {:error, reason}} -> "#{file}: #{reason}" end)
+        |> Enum.map(fn {file, {:error, reason}} -> "#{file}: #{Exception.message(reason)}" end)
 
       assert failures == [],
              "Failed to accept valid JSON with keys: :intern:\n#{Enum.join(failures, "\n")}"
@@ -129,7 +129,7 @@ defmodule JsonTestSuiteTest do
             :ok
 
           {^file, {:error, reason}} ->
-            flunk("Expected to accept #{file} but got error: #{reason}")
+            flunk("Expected to accept #{file} but got error: #{Exception.message(reason)}")
 
           nil ->
             # File might not exist in current version of test suite

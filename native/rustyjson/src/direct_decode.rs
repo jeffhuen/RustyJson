@@ -1,9 +1,30 @@
+use crate::atoms;
+use num_bigint::BigInt;
 use rustler::{types::atom, Encoder, Env, NewBinary, Term};
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher};
 
 /// Maximum nesting depth to prevent stack overflow
 const MAX_DEPTH: usize = 128;
+
+/// Options controlling decode behavior, parsed from the Elixir opts map.
+pub struct DecodeOptions {
+    pub intern_keys: bool,
+    pub floats_decimals: bool,
+    pub ordered_objects: bool,
+    pub integer_digit_limit: usize,
+}
+
+impl Default for DecodeOptions {
+    fn default() -> Self {
+        Self {
+            intern_keys: false,
+            floats_decimals: false,
+            ordered_objects: false,
+            integer_digit_limit: 1024,
+        }
+    }
+}
 
 // ============================================================================
 // FNV-1a Hasher - fast non-cryptographic hash for key interning
@@ -58,34 +79,35 @@ pub struct DirectParser<'a, 'b> {
     /// Optional key cache for interning repeated object keys.
     /// Only allocated when `intern_keys=true`.
     key_cache: Option<FastHashMap<&'b [u8], Term<'a>>>,
+    /// Decode options controlling behavior
+    opts: DecodeOptions,
 }
 
 impl<'a, 'b> DirectParser<'a, 'b> {
     #[inline]
-    pub fn new(env: Env<'a>, input: &'b [u8], intern_keys: bool) -> Self {
+    pub fn new(env: Env<'a>, input: &'b [u8], opts: DecodeOptions) -> Self {
+        let key_cache = if opts.intern_keys {
+            Some(FastHashMap::with_capacity_and_hasher(32, FnvBuildHasher))
+        } else {
+            None
+        };
         Self {
             input,
             pos: 0,
             depth: 0,
             env,
-            key_cache: if intern_keys {
-                Some(FastHashMap::with_capacity_and_hasher(32, FnvBuildHasher))
-            } else {
-                None
-            },
+            key_cache,
+            opts,
         }
     }
 
     #[inline]
-    pub fn parse(mut self) -> Result<Term<'a>, String> {
+    pub fn parse(mut self) -> Result<Term<'a>, (String, usize)> {
         self.skip_whitespace();
         let term = self.parse_value()?;
         self.skip_whitespace();
         if self.pos < self.input.len() {
-            return Err(format!(
-                "Unexpected trailing characters at position {}",
-                self.pos
-            ));
+            return Err(("Unexpected trailing characters".to_string(), self.pos));
         }
         Ok(term)
     }
@@ -110,8 +132,13 @@ impl<'a, 'b> DirectParser<'a, 'b> {
         }
     }
 
+    #[inline(always)]
+    fn err(&self, msg: &str) -> (String, usize) {
+        (msg.to_string(), self.pos)
+    }
+
     #[inline]
-    fn parse_value(&mut self) -> Result<Term<'a>, String> {
+    fn parse_value(&mut self) -> Result<Term<'a>, (String, usize)> {
         match self.peek() {
             Some(b'n') => self.parse_null(),
             Some(b't') => self.parse_true(),
@@ -120,48 +147,46 @@ impl<'a, 'b> DirectParser<'a, 'b> {
             Some(b'[') => self.parse_array(),
             Some(b'{') => self.parse_object(),
             Some(b'-') | Some(b'0'..=b'9') => self.parse_number(),
-            Some(c) => Err(format!(
-                "Unexpected character '{}' at position {}",
-                c as char, self.pos
-            )),
-            None => Err("Unexpected end of input".to_string()),
+            Some(_) => Err(self.err("Unexpected character")),
+            None => Err(self.err("Unexpected end of input")),
         }
     }
 
     #[inline(always)]
-    fn parse_null(&mut self) -> Result<Term<'a>, String> {
+    fn parse_null(&mut self) -> Result<Term<'a>, (String, usize)> {
         if self.input[self.pos..].starts_with(b"null") {
             self.pos += 4;
             Ok(atom::nil().encode(self.env))
         } else {
-            Err(format!("Expected 'null' at position {}", self.pos))
+            Err(self.err("Expected 'null'"))
         }
     }
 
     #[inline(always)]
-    fn parse_true(&mut self) -> Result<Term<'a>, String> {
+    fn parse_true(&mut self) -> Result<Term<'a>, (String, usize)> {
         if self.input[self.pos..].starts_with(b"true") {
             self.pos += 4;
             Ok(true.encode(self.env))
         } else {
-            Err(format!("Expected 'true' at position {}", self.pos))
+            Err(self.err("Expected 'true'"))
         }
     }
 
     #[inline(always)]
-    fn parse_false(&mut self) -> Result<Term<'a>, String> {
+    fn parse_false(&mut self) -> Result<Term<'a>, (String, usize)> {
         if self.input[self.pos..].starts_with(b"false") {
             self.pos += 5;
             Ok(false.encode(self.env))
         } else {
-            Err(format!("Expected 'false' at position {}", self.pos))
+            Err(self.err("Expected 'false'"))
         }
     }
 
     /// Core string parsing logic. When `for_key` is true and we have a cache,
     /// attempts to intern non-escaped strings.
     #[inline]
-    fn parse_string_impl(&mut self, for_key: bool) -> Result<Term<'a>, String> {
+    fn parse_string_impl(&mut self, for_key: bool) -> Result<Term<'a>, (String, usize)> {
+        let string_start = self.pos;
         self.advance(); // Skip opening quote
         let start = self.pos;
         let mut has_escape = false;
@@ -176,17 +201,15 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                     // Escaped strings: decode and return (cannot intern - decoded
                     // bytes differ from input slice, and escaped keys are rare)
                     if has_escape {
-                        let decoded = self.decode_escaped_string(start, end)?;
+                        let decoded = self
+                            .decode_escaped_string(start, end)
+                            .map_err(|msg| (msg, string_start))?;
                         return Ok(encode_binary(self.env, &decoded));
                     }
 
                     let str_bytes = &self.input[start..end];
 
                     // Key interning: check cache if enabled and parsing a key.
-                    // Note: Keys with escape sequences are NOT interned because:
-                    // 1. We can't use raw input bytes as cache key (they differ from decoded form)
-                    // 2. Escaped keys in object schemas are rare in practice
-                    // 3. Performance impact is negligible for typical data
                     if for_key {
                         if let Some(ref mut cache) = self.key_cache {
                             if let Some(&cached) = cache.get(str_bytes) {
@@ -209,26 +232,23 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                 }
                 // JSON spec: control characters (0x00-0x1F) must be escaped
                 0x00..=0x1F => {
-                    return Err(format!(
-                        "Unescaped control character at position {}",
-                        self.pos
-                    ));
+                    return Err(self.err("Unescaped control character"));
                 }
                 _ => self.advance(),
             }
         }
-        Err("Unterminated string".to_string())
+        Err(("Unterminated string".to_string(), string_start))
     }
 
     /// Parse a string value (not interned)
     #[inline]
-    fn parse_string(&mut self) -> Result<Term<'a>, String> {
+    fn parse_string(&mut self) -> Result<Term<'a>, (String, usize)> {
         self.parse_string_impl(false)
     }
 
     /// Parse an object key (interned if cache enabled)
     #[inline]
-    fn parse_key(&mut self) -> Result<Term<'a>, String> {
+    fn parse_key(&mut self) -> Result<Term<'a>, (String, usize)> {
         self.parse_string_impl(true)
     }
 
@@ -319,7 +339,7 @@ impl<'a, 'b> DirectParser<'a, 'b> {
     }
 
     #[inline]
-    fn parse_number(&mut self) -> Result<Term<'a>, String> {
+    fn parse_number(&mut self) -> Result<Term<'a>, (String, usize)> {
         let start = self.pos;
         let mut is_float = false;
 
@@ -328,7 +348,8 @@ impl<'a, 'b> DirectParser<'a, 'b> {
             self.advance();
         }
 
-        // Integer part
+        // Integer part - track digit count for digit limit
+        let int_digit_start = self.pos;
         match self.peek() {
             Some(b'0') => self.advance(),
             Some(b'1'..=b'9') => {
@@ -337,7 +358,14 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                     self.advance();
                 }
             }
-            _ => return Err(format!("Invalid number at position {}", self.pos)),
+            _ => return Err(("Invalid number".to_string(), start)),
+        }
+        let int_digit_count = self.pos - int_digit_start;
+
+        // Check integer digit limit
+        let limit = self.opts.integer_digit_limit;
+        if limit > 0 && int_digit_count > limit {
+            return Err((format!("integer exceeds {} digit limit", limit), start));
         }
 
         // Fractional part
@@ -345,7 +373,7 @@ impl<'a, 'b> DirectParser<'a, 'b> {
             is_float = true;
             self.advance();
             if !matches!(self.peek(), Some(b'0'..=b'9')) {
-                return Err(format!("Invalid number at position {}", self.pos));
+                return Err(("Invalid number".to_string(), start));
             }
             while matches!(self.peek(), Some(b'0'..=b'9')) {
                 self.advance();
@@ -360,7 +388,7 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                 self.advance();
             }
             if !matches!(self.peek(), Some(b'0'..=b'9')) {
-                return Err(format!("Invalid number at position {}", self.pos));
+                return Err(("Invalid number".to_string(), start));
             }
             while matches!(self.peek(), Some(b'0'..=b'9')) {
                 self.advance();
@@ -370,8 +398,12 @@ impl<'a, 'b> DirectParser<'a, 'b> {
         let num_bytes = &self.input[start..self.pos];
 
         if is_float {
+            if self.opts.floats_decimals {
+                return self.parse_number_as_decimal(num_bytes, start);
+            }
             // Use lexical-core for fast float parsing
-            let f: f64 = lexical_core::parse(num_bytes).map_err(|_| "Invalid float")?;
+            let f: f64 =
+                lexical_core::parse(num_bytes).map_err(|_| ("Invalid float".to_string(), start))?;
             Ok(f.encode(self.env))
         } else {
             // Try i64 first using lexical-core
@@ -380,18 +412,96 @@ impl<'a, 'b> DirectParser<'a, 'b> {
             } else if let Ok(u) = lexical_core::parse::<u64>(num_bytes) {
                 Ok(u.encode(self.env))
             } else {
-                // Fall back to float for very large numbers
-                let f: f64 = lexical_core::parse(num_bytes).map_err(|_| "Invalid number")?;
-                Ok(f.encode(self.env))
+                // Parse as BigInt to preserve arbitrary precision (matches Jason behavior)
+                let num_str = std::str::from_utf8(num_bytes)
+                    .map_err(|_| ("Invalid number encoding".to_string(), start))?;
+                let big: BigInt = num_str
+                    .parse()
+                    .map_err(|_| ("Invalid number".to_string(), start))?;
+                Ok(big.encode(self.env))
             }
         }
     }
 
+    /// Parse a float number string into a %Decimal{} struct term
+    fn parse_number_as_decimal(
+        &self,
+        num_bytes: &[u8],
+        start: usize,
+    ) -> Result<Term<'a>, (String, usize)> {
+        let num_str = std::str::from_utf8(num_bytes)
+            .map_err(|_| ("Invalid number encoding".to_string(), start))?;
+
+        // Determine sign
+        let (sign_val, rest) = if let Some(stripped) = num_str.strip_prefix('-') {
+            (-1i64, stripped)
+        } else {
+            (1i64, num_str)
+        };
+
+        // Split into integer/fraction and exponent parts
+        let (mantissa_str, exp_part) = if let Some(e_pos) = rest.find(['e', 'E']) {
+            (
+                &rest[..e_pos],
+                rest[e_pos + 1..].parse::<i64>().unwrap_or(0),
+            )
+        } else {
+            (rest, 0i64)
+        };
+
+        // Split mantissa into integer and fraction
+        let (coef_str, frac_len) = if let Some(dot_pos) = mantissa_str.find('.') {
+            let int_part = &mantissa_str[..dot_pos];
+            let frac_part = &mantissa_str[dot_pos + 1..];
+            let combined = format!("{}{}", int_part, frac_part);
+            (combined, frac_part.len() as i64)
+        } else {
+            (mantissa_str.to_string(), 0i64)
+        };
+
+        // Remove leading zeros from coefficient (but keep at least one digit)
+        let coef_str = coef_str.trim_start_matches('0');
+        let coef_str = if coef_str.is_empty() { "0" } else { coef_str };
+
+        let exp_val = exp_part - frac_len;
+
+        let env = self.env;
+
+        // Parse coef as integer (could be large)
+        let coef_term = if let Ok(c) = coef_str.parse::<i64>() {
+            c.encode(env)
+        } else if let Ok(c) = coef_str.parse::<u64>() {
+            c.encode(env)
+        } else {
+            use std::str::FromStr;
+            let big = num_bigint::BigInt::from_str(coef_str)
+                .map_err(|_| ("Invalid decimal coefficient".to_string(), start))?;
+            big.encode(env)
+        };
+
+        // Build %Decimal{sign: sign, coef: coef, exp: exp} using pre-declared atoms
+        let keys = [
+            atoms::__struct__().to_term(env),
+            atoms::coef().to_term(env),
+            atoms::exp().to_term(env),
+            atoms::sign().to_term(env),
+        ];
+        let values = [
+            atoms::decimal_struct().to_term(env),
+            coef_term,
+            exp_val.encode(env),
+            sign_val.encode(env),
+        ];
+
+        Term::map_from_term_arrays(env, &keys, &values)
+            .map_err(|_| ("Failed to create Decimal struct".to_string(), start))
+    }
+
     #[inline]
-    fn parse_array(&mut self) -> Result<Term<'a>, String> {
+    fn parse_array(&mut self) -> Result<Term<'a>, (String, usize)> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
-            return Err(format!("Nesting depth exceeds maximum of {}", MAX_DEPTH));
+            return Err(self.err("Nesting depth exceeds maximum"));
         }
 
         self.advance(); // Skip '['
@@ -422,7 +532,7 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                     self.advance();
                     break;
                 }
-                _ => return Err(format!("Expected ',' or ']' at position {}", self.pos)),
+                _ => return Err(self.err("Expected ',' or ']'")),
             }
         }
 
@@ -436,18 +546,22 @@ impl<'a, 'b> DirectParser<'a, 'b> {
     }
 
     #[inline]
-    fn parse_object(&mut self) -> Result<Term<'a>, String> {
+    fn parse_object(&mut self) -> Result<Term<'a>, (String, usize)> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
-            return Err(format!("Nesting depth exceeds maximum of {}", MAX_DEPTH));
+            return Err(self.err("Nesting depth exceeds maximum"));
         }
 
+        let obj_start = self.pos;
         self.advance(); // Skip '{'
         self.skip_whitespace();
 
         if self.peek() == Some(b'}') {
             self.advance();
             self.depth -= 1;
+            if self.opts.ordered_objects {
+                return self.build_ordered_object(vec![], vec![], obj_start);
+            }
             return Ok(Term::map_new(self.env));
         }
 
@@ -460,14 +574,14 @@ impl<'a, 'b> DirectParser<'a, 'b> {
         loop {
             // Parse key (use parse_key for potential interning)
             if self.peek() != Some(b'"') {
-                return Err(format!("Expected string key at position {}", self.pos));
+                return Err(self.err("Expected string key"));
             }
             let key = self.parse_key()?;
             keys.push(key);
 
             self.skip_whitespace();
             if self.peek() != Some(b':') {
-                return Err(format!("Expected ':' at position {}", self.pos));
+                return Err(self.err("Expected ':'"));
             }
             self.advance();
             self.skip_whitespace();
@@ -486,20 +600,51 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                     self.advance();
                     break;
                 }
-                _ => return Err(format!("Expected ',' or '}}' at position {}", self.pos)),
+                _ => return Err(self.err("Expected ',' or '}'")),
             }
         }
 
         self.depth -= 1;
+
+        if self.opts.ordered_objects {
+            return self.build_ordered_object(keys, values, obj_start);
+        }
 
         // Fast path: no duplicate keys (common case)
         match Term::map_from_term_arrays(self.env, &keys, &values) {
             Ok(map) => Ok(map),
             Err(_) => {
                 // Slow path: duplicate keys detected, use "last wins" semantics
-                self.build_map_with_duplicates(keys, values)
+                self.build_map_with_duplicates(keys, values, obj_start)
             }
         }
+    }
+
+    /// Build %RustyJson.OrderedObject{values: [{k, v}, ...]} preserving order.
+    /// Pass empty vecs for an empty ordered object.
+    fn build_ordered_object(
+        &self,
+        keys: Vec<Term<'a>>,
+        values: Vec<Term<'a>>,
+        pos: usize,
+    ) -> Result<Term<'a>, (String, usize)> {
+        let env = self.env;
+
+        // Build list of {key, value} tuples in order
+        let mut list = Term::list_new_empty(env);
+        for i in (0..keys.len()).rev() {
+            let tuple = rustler::types::tuple::make_tuple(env, &[keys[i], values[i]]);
+            list = list.list_prepend(tuple);
+        }
+
+        let map_keys = [
+            atoms::__struct__().to_term(env),
+            atoms::values().to_term(env),
+        ];
+        let map_vals = [atoms::ordered_object_struct().to_term(env), list];
+
+        Term::map_from_term_arrays(env, &map_keys, &map_vals)
+            .map_err(|_| ("Failed to create OrderedObject".to_string(), pos))
     }
 
     /// Build a map handling duplicate keys with "last wins" semantics
@@ -508,7 +653,8 @@ impl<'a, 'b> DirectParser<'a, 'b> {
         &self,
         keys: Vec<Term<'a>>,
         values: Vec<Term<'a>>,
-    ) -> Result<Term<'a>, String> {
+        pos: usize,
+    ) -> Result<Term<'a>, (String, usize)> {
         // Extract key bytes and deduplicate
         let mut key_map: HashMap<Vec<u8>, usize> = HashMap::with_capacity(keys.len());
         let mut final_keys = Vec::with_capacity(keys.len());
@@ -531,7 +677,7 @@ impl<'a, 'b> DirectParser<'a, 'b> {
         }
 
         Term::map_from_term_arrays(self.env, &final_keys, &final_values)
-            .map_err(|_| "Failed to create map".to_string())
+            .map_err(|_| ("Failed to create map".to_string(), pos))
     }
 }
 
@@ -544,6 +690,10 @@ fn encode_binary<'a>(env: Env<'a>, bytes: &[u8]) -> Term<'a> {
 
 /// Parse JSON directly to Erlang terms without intermediate representation
 #[inline]
-pub fn json_to_term<'a>(env: Env<'a>, json: &[u8], intern_keys: bool) -> Result<Term<'a>, String> {
-    DirectParser::new(env, json, intern_keys).parse()
+pub fn json_to_term<'a>(
+    env: Env<'a>,
+    json: &[u8],
+    opts: DecodeOptions,
+) -> Result<Term<'a>, (String, usize)> {
+    DirectParser::new(env, json, opts).parse()
 }

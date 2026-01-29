@@ -51,7 +51,7 @@ defmodule RustyJson.MixProject do
   end
 
   defp description() do
-    "High-performance JSON encoding/decoding for Elixir. A drop-in Jason replacement that's 2-3x faster with 2-4x less memory. Full RFC 8259 compliance and memory safety. Purpose-built Rust NIFs, no serde."
+    "Ultra-fast JSON encoding/decoding for Elixir. A drop-in Jason replacement that's 2-3x faster with 2-4x less memory, plus key interning for up to 2x faster bulk decoding. Full RFC 8259 compliance and memory safety. Purpose-built Rust NIFs, no serde."
   end
 
   defp package() do

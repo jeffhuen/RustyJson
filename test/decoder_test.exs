@@ -267,7 +267,7 @@ defmodule DecoderTest do
 
     test "rejects 129 levels of array nesting" do
       json = String.duplicate("[", 129) <> "1" <> String.duplicate("]", 129)
-      assert {:error, msg} = RustyJson.decode(json)
+      assert {:error, %RustyJson.DecodeError{message: msg}} = RustyJson.decode(json)
       assert msg =~ "Nesting depth"
     end
 
@@ -278,7 +278,7 @@ defmodule DecoderTest do
 
     test "rejects 129 levels of object nesting" do
       json = String.duplicate("{\"a\":", 129) <> "1" <> String.duplicate("}", 129)
-      assert {:error, msg} = RustyJson.decode(json)
+      assert {:error, %RustyJson.DecodeError{message: msg}} = RustyJson.decode(json)
       assert msg =~ "Nesting depth"
     end
 
@@ -371,6 +371,268 @@ defmodule DecoderTest do
       # "id" appears at top level and nested level
       json = ~s([{"id": 1, "nested": {"id": 2}}])
       assert [%{"id" => 1, "nested" => %{"id" => 2}}] = RustyJson.decode!(json, keys: :intern)
+    end
+  end
+
+  describe "decode with keys: custom_function (Gap 1)" do
+    test "custom function applied to keys" do
+      json = ~s({"name":"Alice","age":30})
+      result = RustyJson.decode!(json, keys: &String.upcase/1)
+      assert result == %{"NAME" => "Alice", "AGE" => 30}
+    end
+
+    test "custom function applied recursively" do
+      json = ~s({"user":{"name":"Alice","role":"admin"}})
+      result = RustyJson.decode!(json, keys: &String.upcase/1)
+      assert result == %{"USER" => %{"NAME" => "Alice", "ROLE" => "admin"}}
+    end
+
+    test "custom function with arrays of objects" do
+      json = ~s([{"id":1},{"id":2}])
+      result = RustyJson.decode!(json, keys: fn k -> "key_#{k}" end)
+      assert result == [%{"key_id" => 1}, %{"key_id" => 2}]
+    end
+
+    test "custom function does not affect non-string values" do
+      json = ~s({"items":["a","b"]})
+      result = RustyJson.decode!(json, keys: &String.upcase/1)
+      assert result == %{"ITEMS" => ["a", "b"]}
+    end
+  end
+
+  describe "decode with keys: :atoms (unsafe, creates atoms)" do
+    test ":atoms creates new atoms via String.to_atom/1" do
+      json = ~s({"brand_new_atoms_test_key": 1})
+      result = RustyJson.decode!(json, keys: :atoms)
+      assert result == %{brand_new_atoms_test_key: 1}
+    end
+
+    test ":atoms converts existing atoms" do
+      json = ~s({"name": "Alice"})
+      result = RustyJson.decode!(json, keys: :atoms)
+      assert result == %{name: "Alice"}
+    end
+
+    test ":atoms works recursively" do
+      json = ~s({"user": {"name": "Alice"}})
+      result = RustyJson.decode!(json, keys: :atoms)
+      assert result == %{user: %{name: "Alice"}}
+    end
+  end
+
+  describe "decode with keys: :atoms! (strict, existing atoms only)" do
+    test ":atoms! raises for non-existing atoms" do
+      assert_raise ArgumentError, fn ->
+        RustyJson.decode!(~s({"nonexistent_atom_zzzzzz_12345": 1}), keys: :atoms!)
+      end
+    end
+
+    test ":atoms! converts existing atoms" do
+      # :name already exists as an atom
+      json = ~s({"name": "Alice"})
+      result = RustyJson.decode!(json, keys: :atoms!)
+      assert result == %{name: "Alice"}
+    end
+
+    test ":atoms! works recursively with existing atoms" do
+      json = ~s({"user": {"name": "Alice"}})
+      result = RustyJson.decode!(json, keys: :atoms!)
+      assert result == %{user: %{name: "Alice"}}
+    end
+  end
+
+  describe "decode with keys: :copy" do
+    test "keys: :copy decodes like :strings" do
+      json = ~s({"name":"Alice","age":30})
+      copy = RustyJson.decode!(json, keys: :copy)
+      strings = RustyJson.decode!(json, keys: :strings)
+      assert copy == strings
+    end
+
+    test "keys: :copy with nested objects" do
+      json = ~s({"user":{"name":"Alice"}})
+      result = RustyJson.decode!(json, keys: :copy)
+      assert result == %{"user" => %{"name" => "Alice"}}
+    end
+  end
+
+  describe "decode with strings: option (Gap 2)" do
+    test "strings: :copy decodes correctly" do
+      json = ~s({"key":"value"})
+      assert RustyJson.decode!(json, strings: :copy) == %{"key" => "value"}
+    end
+
+    test "strings: :reference decodes correctly" do
+      json = ~s({"key":"value"})
+      assert RustyJson.decode!(json, strings: :reference) == %{"key" => "value"}
+    end
+
+    test "both modes produce identical results" do
+      json = ~s([{"a":"hello","b":"world"},{"a":"foo","b":"bar"}])
+      copy = RustyJson.decode!(json, strings: :copy)
+      ref = RustyJson.decode!(json, strings: :reference)
+      assert copy == ref
+    end
+
+    test "invalid strings option raises" do
+      assert_raise ArgumentError, fn ->
+        RustyJson.decode!("1", strings: :invalid)
+      end
+    end
+  end
+
+  describe "decode with floats: :decimals (Gap 3)" do
+    test "floats decoded as Decimal structs" do
+      json = ~s({"price":19.99})
+      result = RustyJson.decode!(json, floats: :decimals)
+      assert %{"price" => %Decimal{}} = result
+      assert Decimal.equal?(result["price"], Decimal.new("19.99"))
+    end
+
+    test "integer values remain as integers" do
+      json = ~s({"count":42})
+      result = RustyJson.decode!(json, floats: :decimals)
+      assert result == %{"count" => 42}
+    end
+
+    test "negative float as decimal" do
+      json = ~s(-3.14)
+      result = RustyJson.decode!(json, floats: :decimals)
+      assert %Decimal{} = result
+      assert Decimal.equal?(result, Decimal.new("-3.14"))
+    end
+
+    test "float with exponent as decimal" do
+      json = ~s(1.5e2)
+      result = RustyJson.decode!(json, floats: :decimals)
+      assert %Decimal{} = result
+      assert Decimal.equal?(result, Decimal.new("150"))
+    end
+
+    test "zero float as decimal" do
+      json = ~s(0.0)
+      result = RustyJson.decode!(json, floats: :decimals)
+      assert %Decimal{} = result
+      assert Decimal.equal?(result, Decimal.new("0.0"))
+    end
+
+    test "invalid floats option raises" do
+      assert_raise ArgumentError, fn ->
+        RustyJson.decode!("1", floats: :invalid)
+      end
+    end
+  end
+
+  describe "DecodeError struct fields (Gap 8)" do
+    test "DecodeError has position field" do
+      assert_raise RustyJson.DecodeError, fn ->
+        RustyJson.decode!("invalid")
+      end
+
+      try do
+        RustyJson.decode!("invalid")
+      rescue
+        e in RustyJson.DecodeError ->
+          assert e.position == 0
+          assert e.data == "invalid"
+          assert is_binary(e.token)
+      end
+    end
+
+    test "DecodeError position for mid-input errors" do
+      try do
+        RustyJson.decode!(~s({"a": invalid}))
+      rescue
+        e in RustyJson.DecodeError ->
+          assert is_integer(e.position)
+          assert e.position > 0
+          assert e.data == ~s({"a": invalid})
+      end
+    end
+
+    test "DecodeError has token field" do
+      try do
+        RustyJson.decode!(~s([1, 2, invalid]))
+      rescue
+        e in RustyJson.DecodeError ->
+          assert is_binary(e.token)
+      end
+    end
+
+    test "decode/2 returns DecodeError struct" do
+      assert {:error, %RustyJson.DecodeError{} = error} = RustyJson.decode("invalid")
+      assert is_binary(error.message)
+      assert error.message =~ "position"
+    end
+  end
+
+  describe "large integer precision" do
+    test "20-digit integer preserves precision" do
+      big = String.duplicate("9", 20)
+      result = RustyJson.decode!(big)
+      assert is_integer(result)
+      assert result == String.to_integer(big)
+    end
+
+    test "40-digit integer preserves precision" do
+      big = String.duplicate("1", 40)
+      result = RustyJson.decode!(big)
+      assert is_integer(result)
+      assert result == String.to_integer(big)
+    end
+
+    test "negative large integer preserves precision" do
+      big = "-" <> String.duplicate("9", 25)
+      result = RustyJson.decode!(big)
+      assert is_integer(result)
+      assert result == String.to_integer(big)
+    end
+
+    test "round-trip large integer" do
+      big = String.to_integer(String.duplicate("9", 30))
+      json = RustyJson.encode!(big)
+      assert RustyJson.decode!(json) == big
+    end
+  end
+
+  describe "decode with decoding_integer_digit_limit (Gap 9)" do
+    test "default limit of 1024 digits" do
+      # Integer within limit should work
+      json = ~s({"n":123456789})
+      assert {:ok, _} = RustyJson.decode(json)
+    end
+
+    test "rejects integers exceeding digit limit" do
+      # Create a number with more than 10 digits
+      big_num = String.duplicate("1", 11)
+      json = ~s({"n":#{big_num}})
+
+      assert {:error, %RustyJson.DecodeError{message: msg}} =
+               RustyJson.decode(json, decoding_integer_digit_limit: 10)
+
+      assert msg =~ "digit limit"
+    end
+
+    test "custom digit limit" do
+      # 5 digit limit
+      json = ~s(12345)
+      assert {:ok, 12_345} = RustyJson.decode(json, decoding_integer_digit_limit: 5)
+
+      json = ~s(123456)
+      assert {:error, _} = RustyJson.decode(json, decoding_integer_digit_limit: 5)
+    end
+
+    test "digit limit of 0 disables the check" do
+      # 50-digit number - larger than default limit of 1024 won't trigger,
+      # but verifies limit=0 doesn't reject it
+      big_num = String.duplicate("9", 50)
+      json = big_num
+      assert {:ok, _} = RustyJson.decode(json, decoding_integer_digit_limit: 0)
+    end
+
+    test "floats are not affected by digit limit" do
+      json = ~s(1.23456789012345)
+      assert {:ok, _} = RustyJson.decode(json, decoding_integer_digit_limit: 5)
     end
   end
 end

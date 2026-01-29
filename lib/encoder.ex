@@ -25,7 +25,7 @@ defprotocol RustyJson.Encoder do
   The `@derive` will generate an implementation like:
 
       defimpl RustyJson.Encoder, for: Person do
-        def encode(value) do
+        def encode(value, _opts) do
           Map.take(value, [:name, :age])
         end
       end
@@ -35,31 +35,56 @@ defprotocol RustyJson.Encoder do
   If you need full control, implement the protocol directly:
 
       defimpl RustyJson.Encoder, for: Money do
-        def encode(%Money{amount: amount, currency: currency}) do
+        def encode(%Money{amount: amount, currency: currency}, _opts) do
           %{amount: amount, currency: to_string(currency)}
         end
       end
 
   The returned value must be a JSON-encodable term (map, list, string,
   number, boolean, nil, or another struct implementing this protocol).
+
+  ## Fallback Behavior
+
+  Structs without an explicit `RustyJson.Encoder` implementation raise
+  `Protocol.UndefinedError`. Custom types must explicitly opt in to encoding
+  via `@derive RustyJson.Encoder` or `defimpl RustyJson.Encoder`.
+
+  RustyJson has no runtime dependency on Jason. There is no fallback to
+  `Jason.Encoder` — if you are migrating from Jason, update your structs to
+  derive or implement `RustyJson.Encoder` directly.
   """
 
   @fallback_to_any true
 
+  @typedoc """
+  Encoder options passed from `RustyJson.encode!/2`.
+
+  Contains encoding context as a keyword list (e.g. `[escape: :html_safe, maps: :naive]`).
+  Most protocol implementations can ignore this parameter since encoding details
+  are handled by the Rust NIF. Function-based `Fragment` and `OrderedObject`
+  implementations use these options to propagate encoding context to nested values.
+  """
+  @type opts :: keyword() | map()
+
   @doc """
   Converts `value` to a JSON-encodable type.
+
+  The `opts` parameter carries encoding context (`:escape`, `:maps`) from
+  `RustyJson.encode!/2`. Most implementations can ignore it. Implementations
+  that produce function-based `%RustyJson.Fragment{}` values (like `OrderedObject`)
+  use opts to propagate encoding settings to nested `encode!` calls.
   """
-  @spec encode(t) :: term
-  def encode(value)
+  @spec encode(t, opts()) :: term
+  def encode(value, opts \\ [])
 end
 
 # For maps, lists, and tuples - only recurse if values might need encoding.
 # Primitives (strings, numbers, atoms, booleans) pass through unchanged.
 defimpl RustyJson.Encoder, for: Map do
-  def encode(map) do
+  def encode(map, opts) do
     # Check if any value needs encoding (is a struct, map, list, or tuple)
     if Enum.any?(map, fn {_k, v} -> needs_encoding?(v) end) do
-      :maps.map(fn _k, v -> RustyJson.Encoder.encode(v) end, map)
+      :maps.map(fn _k, v -> RustyJson.Encoder.encode(v, opts) end, map)
     else
       map
     end
@@ -72,11 +97,11 @@ defimpl RustyJson.Encoder, for: Map do
 end
 
 defimpl RustyJson.Encoder, for: List do
-  def encode([]), do: []
+  def encode([], _opts), do: []
 
-  def encode(list) do
+  def encode(list, opts) do
     if Enum.any?(list, &needs_encoding?/1) do
-      Enum.map(list, &RustyJson.Encoder.encode/1)
+      Enum.map(list, &RustyJson.Encoder.encode(&1, opts))
     else
       list
     end
@@ -89,24 +114,29 @@ defimpl RustyJson.Encoder, for: List do
 end
 
 defimpl RustyJson.Encoder, for: Tuple do
-  def encode(tuple) do
-    tuple |> Tuple.to_list() |> RustyJson.Encoder.encode()
+  def encode(tuple, opts) do
+    tuple |> Tuple.to_list() |> RustyJson.Encoder.encode(opts)
   end
+end
+
+# Primitive types pass through unchanged - Rust handles them natively.
+defimpl RustyJson.Encoder, for: [BitString, Integer, Float, Atom] do
+  def encode(value, _opts), do: value
 end
 
 # Built-in types are passed through to Rust which handles them natively.
 # This avoids double-processing while maintaining protocol compatibility.
-defimpl RustyJson.Encoder, for: [Date, Time, NaiveDateTime, DateTime, MapSet, Range] do
-  def encode(value), do: value
+defimpl RustyJson.Encoder, for: [Date, Time, NaiveDateTime, DateTime] do
+  def encode(value, _opts), do: value
 end
 
 defimpl RustyJson.Encoder, for: URI do
-  def encode(uri), do: uri
+  def encode(uri, _opts), do: uri
 end
 
 if Code.ensure_loaded?(Decimal) do
   defimpl RustyJson.Encoder, for: Decimal do
-    def encode(decimal), do: decimal
+    def encode(decimal, _opts), do: decimal
   end
 end
 
@@ -118,9 +148,9 @@ defimpl RustyJson.Encoder, for: Any do
 
     quote do
       defimpl RustyJson.Encoder, for: unquote(module) do
-        def encode(struct) do
+        def encode(struct, opts) do
           Map.take(struct, unquote(fields))
-          |> RustyJson.Encoder.encode()
+          |> RustyJson.Encoder.encode(opts)
         end
       end
     end
@@ -143,11 +173,20 @@ defimpl RustyJson.Encoder, for: Any do
     end
   end
 
-  def encode(%{__struct__: _module} = struct) do
-    struct
-    |> Map.from_struct()
-    |> RustyJson.Encoder.encode()
+  def encode(%_{} = struct, _opts) do
+    raise_undefined(struct)
   end
 
-  def encode(value), do: value
+  def encode(value, _opts) do
+    raise_undefined(value)
+  end
+
+  @spec raise_undefined(term()) :: no_return()
+  defp raise_undefined(value) do
+    raise Protocol.UndefinedError,
+      protocol: @protocol,
+      value: value,
+      description:
+        "RustyJson.Encoder protocol must always be explicitly implemented.\n\nIf you own the struct, you can derive the implementation specifying\nwhich fields should be encoded to JSON:\n\n    @derive {RustyJson.Encoder, only: [..]}\n    defstruct ...\n\nIt is also possible to encode all fields, although this should\nbe used carefully to avoid accidentally leaking private information\nwhen new fields are added:\n\n    @derive RustyJson.Encoder\n    defstruct ...\n\nFinally, if you don't own the struct you want to encode to JSON,\nyou may use Protocol.derive/3 placed outside of any module:\n\n    Protocol.derive(RustyJson.Encoder, NameOfTheStruct, only: [..])\n    Protocol.derive(RustyJson.Encoder, NameOfTheStruct)\n"
+  end
 end

@@ -47,6 +47,31 @@ defmodule RustyJson.EncodeError do
 
   defexception [:message]
 
+  @doc """
+  Creates an `EncodeError` from a tagged error reason.
+
+  Matches Jason's `EncodeError.new/1` API for compatibility.
+
+  ## Examples
+
+      iex> RustyJson.EncodeError.new({:duplicate_key, "name"})
+      %RustyJson.EncodeError{message: "duplicate key: name"}
+
+      iex> RustyJson.EncodeError.new({:invalid_byte, ?\\n, "hello\\nworld"})
+      %RustyJson.EncodeError{message: "invalid byte 0x0A in string: \\"hello\\\\nworld\\""}
+  """
+  @spec new({:duplicate_key, term()} | {:invalid_byte, byte(), String.t()}) :: t()
+  def new({:duplicate_key, key}) do
+    %__MODULE__{message: "duplicate key: #{key}"}
+  end
+
+  def new({:invalid_byte, byte, original}) do
+    %__MODULE__{
+      message:
+        "invalid byte 0x#{Integer.to_string(byte, 16) |> String.pad_leading(2, "0")} in string: #{inspect(original)}"
+    }
+  end
+
   @impl true
   @spec exception(String.t() | keyword()) :: t()
   def exception(message) when is_binary(message) do
@@ -68,27 +93,29 @@ defmodule RustyJson.DecodeError do
   ## Fields
 
   * `:message` - Human-readable error description
+  * `:data` - The original input data that failed to decode
+  * `:position` - The byte position in the input where the error occurred
+  * `:token` - A short snippet of input around the error position
 
   ## Common Causes
 
   | Error | Cause |
   |-------|-------|
-  | `"expected value at position N"` | Unexpected character where a JSON value was expected |
-  | `"expected string at position N"` | Object key is not a quoted string |
-  | `"unexpected end of input"` | JSON is truncated |
-  | `"trailing characters after JSON"` | Extra content after valid JSON |
-  | `"maximum nesting depth exceeded"` | More than 128 levels of nesting |
+  | `"Unexpected character at position N"` | Unexpected character where a JSON value was expected |
+  | `"Expected string key at position N"` | Object key is not a quoted string |
+  | `"Unexpected end of input"` | JSON is truncated |
+  | `"Unexpected trailing characters"` | Extra content after valid JSON |
+  | `"Nesting depth exceeds maximum"` | More than 128 levels of nesting |
 
   ## Examples
 
-      iex> RustyJson.decode!("invalid")
-      ** (RustyJson.DecodeError) expected value at position 0
-
-      iex> RustyJson.decode!("{key: 1}")
-      ** (RustyJson.DecodeError) expected string at position 1
-
-      iex> RustyJson.decode!("[1, 2,]")
-      ** (RustyJson.DecodeError) trailing comma at position 6
+      iex> try do
+      ...>   RustyJson.decode!("invalid")
+      ...> rescue
+      ...>   e in RustyJson.DecodeError ->
+      ...>     {e.message, e.position, e.data}
+      ...> end
+      {"Unexpected character at position 0", 0, "invalid"}
 
   ## Handling Errors
 
@@ -106,19 +133,32 @@ defmodule RustyJson.DecodeError do
   """
   @type t :: %__MODULE__{
           message: String.t(),
+          data: String.t() | nil,
+          position: non_neg_integer() | nil,
+          token: String.t() | nil,
           __exception__: true
         }
 
-  defexception [:message]
+  defexception [:message, :data, :position, :token]
 
   @impl true
-  @spec exception(String.t() | keyword()) :: t()
+  @spec exception(String.t() | keyword() | map()) :: t()
   def exception(message) when is_binary(message) do
-    %__MODULE__{message: message}
+    %__MODULE__{message: message, data: nil, position: nil, token: nil}
+  end
+
+  def exception(%{} = attrs) do
+    struct!(__MODULE__, attrs)
   end
 
   def exception(opts) when is_list(opts) do
     message = Keyword.get(opts, :message, "JSON decode error")
-    %__MODULE__{message: message}
+
+    %__MODULE__{
+      message: message,
+      data: Keyword.get(opts, :data),
+      position: Keyword.get(opts, :position),
+      token: Keyword.get(opts, :token)
+    }
   end
 end
