@@ -19,7 +19,7 @@ A JSON library for Elixir powered by Rust NIFs, designed as a drop-in replacemen
 
 ```elixir
 def deps do
-  [{:rustyjson, "~> 0.2"}]
+  [{:rustyjson, "~> 0.3"}]
 end
 ```
 
