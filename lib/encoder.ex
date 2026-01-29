@@ -50,7 +50,7 @@ defprotocol RustyJson.Encoder do
   via `@derive RustyJson.Encoder` or `defimpl RustyJson.Encoder`.
 
   RustyJson has no runtime dependency on Jason. There is no fallback to
-  `Jason.Encoder` — if you are migrating from Jason, update your structs to
+  Jason's `Encoder` protocol — if you are migrating from Jason, update your structs to
   derive or implement `RustyJson.Encoder` directly.
   """
 
@@ -63,8 +63,8 @@ defprotocol RustyJson.Encoder do
   `RustyJson.Encode` functions (`value/2`, `map/2`, `string/2`, etc.) inside
   custom encoder implementations. Do not inspect or destructure this value.
 
-  Matches `Jason.Encoder.opts()` — custom encoder implementations that call
-  `Jason.Encode.map(data, opts)` work identically with `RustyJson.Encode.map(data, opts)`.
+  Matches Jason's `Encoder.opts()` — custom encoder implementations that call
+  Jason's `Encode.map(data, opts)` work identically with `RustyJson.Encode.map(data, opts)`.
   """
   @type opts :: RustyJson.Encode.opts()
 

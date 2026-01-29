@@ -1,6 +1,6 @@
 defmodule RustyJson.Decoder do
   @moduledoc """
-  JSON decoding module, compatible with `Jason.Decoder`.
+  JSON decoding module, compatible with Jason's `Decoder` module.
 
   Provides `parse/2` as an alternative entry point for decoding JSON.
   Delegates to `RustyJson.decode/2`.

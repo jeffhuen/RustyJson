@@ -1,6 +1,6 @@
 defmodule RustyJson.Sigil do
   @moduledoc """
-  JSON sigils for convenient JSON literals, compatible with `Jason.Sigil`.
+  JSON sigils for convenient JSON literals, compatible with Jason's `Sigil` module.
 
   ## Sigils
 

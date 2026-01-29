@@ -1,14 +1,14 @@
 defmodule RustyJson.Encode do
   @moduledoc """
-  Low-level encoding functions, compatible with `Jason.Encode`.
+  Low-level encoding functions, compatible with Jason's `Encode` module.
 
   These functions encode individual Elixir terms to JSON iodata.
   They are designed for use inside custom `RustyJson.Encoder` protocol
-  implementations, providing the same API as `Jason.Encode`.
+  implementations, providing the same API as Jason's `Encode` module.
 
   ## Opts
 
-  Functions that accept `opts` use an opaque type matching `Jason.Encode.opts()`.
+  Functions that accept `opts` use an opaque type matching Jason's `Encode.opts()`.
   The opts value is passed to `RustyJson.Encoder.encode/2` implementations and
   should be forwarded to `Encode` functions as-is.
 
@@ -75,7 +75,7 @@ defmodule RustyJson.Encode do
   @doc """
   Encodes any term to JSON iodata.
 
-  Dispatches based on type, matching `Jason.Encode.value/2`.
+  Dispatches based on type, matching Jason's `Encode.value/2`.
   """
   @spec value(term(), opts()) :: iodata()
   def value(value, {escape, encode_map}) do
@@ -176,7 +176,7 @@ defmodule RustyJson.Encode do
   @doc """
   Encodes a keyword list as an ordered JSON object.
 
-  Preserves key insertion order, matching `Jason.Encode.keyword/2`.
+  Preserves key insertion order, matching Jason's `Encode.keyword/2`.
   """
   @spec keyword(keyword(), opts()) :: iodata()
   def keyword(list, _) when list == [], do: "{}"

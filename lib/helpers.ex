@@ -1,6 +1,6 @@
 defmodule RustyJson.Helpers do
   @moduledoc """
-  Compile-time helpers for JSON encoding, compatible with `Jason.Helpers`.
+  Compile-time helpers for JSON encoding, compatible with Jason's `Helpers` module.
 
   Provides macros that pre-encode JSON object keys at compile time
   for faster runtime encoding.

@@ -6,7 +6,7 @@ defmodule RustyJson.Formatter do
   in `t:iodata/0` format. Input must have valid JSON, invalid JSON may produce
   unexpected results or errors.
 
-  Compatible with `Jason.Formatter`.
+  Compatible with Jason's `Formatter` module.
   """
 
   @type opts :: [
