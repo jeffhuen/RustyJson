@@ -827,7 +827,8 @@ defmodule JasonParityTest do
 
       r = RustyJson.encode!(person)
       j = Jason.encode!(person)
-      assert r == j
+      # Compare decoded values since map key order may differ between encoders
+      assert Jason.decode!(r) == Jason.decode!(j)
     end
 
     test "Date encoding" do
