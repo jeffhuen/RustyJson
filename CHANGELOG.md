@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-01-30
+
+### Performance
+
+- **Single-pass struct encoding** — Struct-heavy data (e.g., lists of derived or custom structs) is now encoded in ~1 walk instead of 3. Previously the encoding pipeline performed three separate walks: protocol dispatch, fragment resolution, and NIF serialization. Now the Encoder protocol produces iodata directly, and the NIF writes it in O(1). RustyJson is now faster across all encoding workloads — plain data and struct-heavy data alike.
+- **Compile-time derived encoder codegen** — `@derive RustyJson.Encoder` now generates iodata templates at compile time with pre-escaped keys. Eliminates runtime `Map.from_struct`, `Map.to_list`, and key-escaping overhead.
+- **NIF bypass for iodata Fragments** — When the top-level encoding result is already iodata (no pretty-print or compression), `IO.iodata_to_binary/1` is used directly instead of passing through the Rust NIF, avoiding unnecessary Erlang↔Rust term conversion.
+- **Top-level-only fragment resolution** — When `protocol: true` (the default), fragment function resolution is now O(1) instead of O(n). Nested fragments are resolved during the protocol walk itself, so only the top-level result needs checking.
+- **Deep-nested decode fast path** — ~27% faster decode for deeply nested JSON (e.g., 100 levels of `{"nested": {...}}`). Single-entry objects and arrays avoid heap allocation entirely.
+- No regressions on plain data workloads (maps, lists, primitives).
+
+### Changed
+
+- `RustyJson.Encoder` custom implementations should now return iodata via `RustyJson.Encode` functions (e.g., `Encode.map/2`) for best performance. Returning plain maps is still supported for backwards compatibility and will be re-encoded automatically.
+
+### Testing
+
+- 421 tests, all passing with 0 failures.
+
 ## [0.3.2] - 2026-01-29
 
 ### Fixed
@@ -277,6 +296,7 @@ No regressions. Relative speedup vs Jason is unchanged from v0.2.0.
 - Zero-copy string handling in decoder for unescaped strings
 - 256-byte lookup table for O(1) escape detection
 
+[0.3.3]: https://github.com/jeffhuen/rustyjson/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/jeffhuen/rustyjson/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/jeffhuen/rustyjson/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/jeffhuen/rustyjson/compare/v0.2.0...v0.3.0

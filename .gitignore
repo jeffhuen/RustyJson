@@ -37,6 +37,9 @@ native/rustyjson/target/
 # macOS
 .DS_Store
 
+# Sandbox (scratch scripts, not shipped)
+/sandbox/
+
 # Benchmark data and output (large files)
 /bench/data/
 /bench/output/

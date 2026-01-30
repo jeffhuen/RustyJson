@@ -307,6 +307,16 @@ defmodule RustyJson do
   @spec nif_decode_dirty(String.t(), map()) :: term()
   defp nif_decode_dirty(_input, _opts_map), do: :erlang.nif_error(:nif_not_loaded)
 
+  @doc false
+  @spec nif_encode_fields([binary()], [term()], escape_mode(), boolean()) :: binary()
+  def nif_encode_fields(_keys, _values, _escape_mode, _strict_keys),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec nif_encode_fields_dirty([binary()], [term()], escape_mode(), boolean()) :: binary()
+  def nif_encode_fields_dirty(_keys, _values, _escape_mode, _strict_keys),
+    do: :erlang.nif_error(:nif_not_loaded)
+
   # ============================================================================
   # Encoding API
   # ============================================================================
@@ -398,21 +408,25 @@ defmodule RustyJson do
   ## Custom Encoding
 
   For custom types, implement `RustyJson.Encoder`. The protocol is used by
-  default (`protocol: true`):
+  default (`protocol: true`). Implementations should return iodata via
+  `RustyJson.Encode` functions for best performance:
 
       defmodule Money do
         defstruct [:amount, :currency]
       end
 
       defimpl RustyJson.Encoder, for: Money do
-        def encode(%Money{amount: amount, currency: currency}, _opts) do
-          %{amount: Decimal.to_string(amount), currency: currency}
+        def encode(%Money{amount: amount, currency: currency}, opts) do
+          RustyJson.Encode.map(%{amount: Decimal.to_string(amount), currency: currency}, opts)
         end
       end
 
       iex> money = %Money{amount: Decimal.new("99.99"), currency: "USD"}
       iex> RustyJson.encode!(money)
       ~s({"amount":"99.99","currency":"USD"})
+
+  For backwards compatibility, returning a plain map is also supported
+  and will be re-encoded automatically (with a small overhead).
 
   ## Compression
 
@@ -447,13 +461,96 @@ defmodule RustyJson do
     # Encoder protocol and into Encode functions for full Jason compatibility.
     encoder_opts = RustyJson.Encode.build_opts(escape, maps_mode)
 
-    # With protocol: true, preprocess with Elixir Encoder protocol
-    # Otherwise, send directly to Rust for maximum performance
-    processed = if use_protocol, do: RustyJson.Encoder.encode(input, encoder_opts), else: input
+    # With protocol: true, preprocess with Elixir Encoder protocol.
+    # Store {escape_mode, strict_keys} in process dict so DerivedNIF.encode/4
+    # can read it. Save/restore previous value to support nested encode! calls.
+    processed =
+      if use_protocol do
+        prev_ctx = Process.get(:rustyjson_encode_fields_ctx)
+        Process.put(:rustyjson_encode_fields_ctx, {escape, strict_keys})
 
-    # Resolve function-based Fragments so the NIF receives iodata
-    processed = resolve_fragment_functions(processed, encoder_opts)
+        try do
+          RustyJson.Encoder.encode(input, encoder_opts)
+        after
+          case prev_ctx do
+            nil -> Process.delete(:rustyjson_encode_fields_ctx)
+            val -> Process.put(:rustyjson_encode_fields_ctx, val)
+          end
+        end
+      else
+        input
+      end
 
+    processed =
+      resolve_protocol_fragments(processed, input, use_protocol, encoder_opts)
+
+    encode_to_nif(
+      processed,
+      indent,
+      compression,
+      lean,
+      escape,
+      strict_keys,
+      pretty_opts,
+      scheduler
+    )
+  rescue
+    e in [ErlangError] ->
+      raise_encode_error(e)
+  end
+
+  # Resolve function-based Fragments so the NIF receives iodata.
+  # When protocol: true, the Encode.value → struct/4 path already resolves
+  # all nested function Fragments during encoding. Only a top-level function
+  # Fragment might remain unresolved, so we skip the O(n) tree walk.
+  defp resolve_protocol_fragments(processed, _input, false, encoder_opts) do
+    resolve_fragment_functions(processed, encoder_opts)
+  end
+
+  defp resolve_protocol_fragments(%RustyJson.Fragment{encode: encode}, _input, true, encoder_opts)
+       when is_function(encode, 1) do
+    %RustyJson.Fragment{encode: encode.(encoder_opts)}
+  end
+
+  defp resolve_protocol_fragments(processed, input, true, _encoder_opts) do
+    # If the top-level input was a struct and the protocol returned non-map
+    # iodata (from a derived encoder calling Encode.map directly), wrap it
+    # in a Fragment so the fast-path bypass can handle it.
+    if is_struct(input) and not is_map(processed) do
+      %RustyJson.Fragment{encode: processed}
+    else
+      processed
+    end
+  end
+
+  # Fast path: when the protocol produced a top-level iodata Fragment and no
+  # pretty printing or compression is needed, bypass the NIF entirely.
+  # IO.iodata_to_binary is a native ERTS operation and faster than having
+  # the NIF walk the iodata tree via write_iodata.
+  defp encode_to_nif(
+         %RustyJson.Fragment{encode: encode},
+         nil = _indent,
+         {:none, _} = _compression,
+         _lean,
+         _escape,
+         _strict_keys,
+         _pretty_opts,
+         _scheduler
+       )
+       when not is_function(encode, 1) do
+    IO.iodata_to_binary(encode)
+  end
+
+  defp encode_to_nif(
+         processed,
+         indent,
+         compression,
+         lean,
+         escape,
+         strict_keys,
+         pretty_opts,
+         scheduler
+       ) do
     nif_opts = %{
       indent: indent,
       compression: compression,
@@ -463,7 +560,6 @@ defmodule RustyJson do
       pretty_opts: pretty_opts
     }
 
-    # Determine which NIF to call based on scheduler option
     uses_compression = match?({:gzip, _}, compression)
     use_dirty = scheduler == :dirty or (scheduler == :auto and uses_compression)
 
@@ -472,9 +568,6 @@ defmodule RustyJson do
     else
       nif_encode_direct(processed, nif_opts)
     end
-  rescue
-    e in [ErlangError] ->
-      raise_encode_error(e)
   end
 
   # ============================================================================

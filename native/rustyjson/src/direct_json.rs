@@ -334,10 +334,16 @@ fn write_map<W: Write>(
     writer: &mut W,
     opts: FormatOptions<'_>,
 ) -> Result<(), std::io::Error> {
-    // Check for special struct types first (unless lean mode)
+    // Check for special struct types using pre-interned __struct__ atom.
+    // This is a single map_get with a cached atom — no Atom::from_str overhead.
+    // Only done when not in lean mode.
     if !opts.is_lean() {
-        if let Some(result) = try_format_special_struct(&term, writer, opts)? {
-            return Ok(result);
+        if let Ok(struct_name) = term.map_get(crate::atoms::__struct__().to_term(term.get_env())) {
+            if let Some(result) =
+                try_format_special_struct_from_name(&term, &struct_name, writer, opts)?
+            {
+                return Ok(result);
+            }
         }
     }
 
@@ -354,10 +360,10 @@ fn write_map<W: Write>(
     let mut started = false;
 
     for (key, value) in iter {
-        // Skip __struct__ key (check inline to avoid collecting)
         if key.get_type() == TermType::Atom {
             if let Ok(key_str) = key.atom_to_string() {
                 if key_str == "__struct__" {
+                    // Skip __struct__ key from output
                     continue;
                 }
 
@@ -379,7 +385,8 @@ fn write_map<W: Write>(
                 ));
             }
         } else {
-            // Non-atom key - write opening brace if needed
+            // Non-atom key — this map is definitely not a struct, no need to
+            // check for __struct__. Write opening brace if needed.
             if !started {
                 writer.write_all(b"{")?;
                 started = true;
@@ -446,29 +453,17 @@ fn write_map<W: Write>(
     Ok(())
 }
 
-/// Try to format special Elixir structs (Decimal, Date, Time, DateTime, NaiveDateTime, URI)
-/// Returns Ok(Some(())) if handled, Ok(None) if not a special struct, Err on error
-fn try_format_special_struct<W: Write>(
+/// Try to format special Elixir structs (Decimal, Date, Time, DateTime, NaiveDateTime, URI).
+/// Called when we encounter __struct__ during map iteration — the struct name value
+/// is passed directly, avoiding a separate map_get lookup.
+/// Returns Ok(Some(())) if handled, Ok(None) if not a special struct, Err on error.
+fn try_format_special_struct_from_name<W: Write>(
     term: &Term,
+    struct_name_term: &Term,
     writer: &mut W,
     opts: FormatOptions<'_>,
 ) -> Result<Option<()>, std::io::Error> {
-    if term.get_type() != TermType::Map {
-        return Ok(None);
-    }
-
-    // Get __struct__ to determine type
-    let struct_atom = match rustler::types::atom::Atom::from_str(term.get_env(), "__struct__") {
-        Ok(a) => a,
-        Err(_) => return Ok(None),
-    };
-
-    let struct_name = match term.map_get(struct_atom.to_term(term.get_env())) {
-        Ok(name) => name,
-        Err(_) => return Ok(None),
-    };
-
-    let struct_str = match struct_name.atom_to_string() {
+    let struct_str = match struct_name_term.atom_to_string() {
         Ok(s) => s,
         Err(_) => return Ok(None),
     };
@@ -1064,6 +1059,20 @@ fn write_json_string<W: Write>(
     escape_mode: EscapeMode,
 ) -> Result<(), std::io::Error> {
     write_json_string_escaped(s, writer, escape_mode)
+}
+
+/// Public wrapper for write_json_string_escaped, used by encode_fields NIF
+pub fn write_json_string_escaped_pub<W: Write>(
+    s: &str,
+    writer: &mut W,
+    escape_mode: EscapeMode,
+) -> Result<(), std::io::Error> {
+    write_json_string_escaped(s, writer, escape_mode)
+}
+
+/// Public wrapper for write_integer, used by encode_fields NIF
+pub fn write_integer_pub<W: Write>(term: Term, writer: &mut W) -> Result<(), std::io::Error> {
+    write_integer(term, writer)
 }
 
 #[cfg(test)]

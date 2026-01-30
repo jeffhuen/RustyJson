@@ -115,7 +115,7 @@ defmodule RustyJson.Encode do
   end
 
   def value(value, escape, encode_map) do
-    RustyJson.Encoder.encode(value, {escape, encode_map})
+    value(RustyJson.Encoder.encode(value, {escape, encode_map}), escape, encode_map)
   end
 
   @doc """
@@ -216,9 +216,13 @@ defmodule RustyJson.Encode do
     end
   end
 
+  defp struct(value, escape, _encode_map, URI) do
+    encode_string(URI.to_string(value), escape)
+  end
+
   defp struct(value, escape, encode_map, RustyJson.Fragment) do
     %{encode: encode} = value
-    encode.({escape, encode_map})
+    if is_function(encode, 1), do: encode.({escape, encode_map}), else: encode
   end
 
   defp struct(value, escape, encode_map, RustyJson.OrderedObject) do
@@ -229,7 +233,18 @@ defmodule RustyJson.Encode do
   end
 
   defp struct(value, escape, encode_map, _module) do
-    RustyJson.Encoder.encode(value, {escape, encode_map})
+    result = RustyJson.Encoder.encode(value, {escape, encode_map})
+    # Derived encoders and Encode-based custom encoders return iodata directly.
+    # Backwards-compatible custom encoders may return a plain map, which we
+    # detect and re-encode here. The is_map check is safe because valid iodata
+    # (binaries and nested lists of binaries/integers) is never a map.
+    #
+    # Other non-iodata return types (nil, atoms, bare strings, plain lists of
+    # non-byte integers) are NOT re-encoded — they pass through as-is and will
+    # produce invalid JSON or raise downstream. This matches Jason's behavior;
+    # the Encoder contract requires iodata or a map. See the "Return Value
+    # Contract" section in the RustyJson.Encoder moduledoc.
+    if is_map(result), do: value(result, escape, encode_map), else: result
   end
 
   @doc false

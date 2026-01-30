@@ -23,10 +23,50 @@ defmodule EncoderTest.DerivedExcept do
   defstruct [:name, :age, :secret]
 end
 
+# NIF-path test struct: >= 5 fields with binaries (triggers NIF path)
+defmodule EncoderTest.NifPerson do
+  @derive RustyJson.Encoder
+  defstruct [:name, :email, :city, :country, :bio, :age, :active]
+end
+
+# Small struct: < 5 fields (always fallback path)
+defmodule EncoderTest.SmallStruct do
+  @derive RustyJson.Encoder
+  defstruct [:a, :b, :c]
+end
+
+# Ints-only struct: >= 5 fields but no binaries (should NOT use NIF = fallback)
+defmodule EncoderTest.IntsOnly do
+  @derive RustyJson.Encoder
+  defstruct [:a, :b, :c, :d, :e]
+end
+
+# Nested struct container (>= 5 fields)
+defmodule EncoderTest.NifNested do
+  @derive RustyJson.Encoder
+  defstruct [:name, :email, :score, :tags, :metadata, :inner]
+end
+
+# Inner derived struct for nesting tests
+defmodule EncoderTest.InnerDerived do
+  @derive RustyJson.Encoder
+  defstruct [:label, :value]
+end
+
 defmodule EncoderTest do
   use ExUnit.Case
 
-  alias EncoderTest.{DerivedAll, DerivedExcept, DerivedOnly, Money}
+  alias EncoderTest.{
+    DerivedAll,
+    DerivedExcept,
+    DerivedOnly,
+    InnerDerived,
+    IntsOnly,
+    Money,
+    NifNested,
+    NifPerson,
+    SmallStruct
+  }
 
   defmodule Container do
     defstruct [:payload]
@@ -476,6 +516,364 @@ defmodule EncoderTest do
     test "Function raises" do
       assert_raise Protocol.UndefinedError, fn ->
         RustyJson.encode!(fn -> :ok end)
+      end
+    end
+  end
+
+  # =====================================================================
+  # encode_fields NIF parity tests
+  # =====================================================================
+
+  describe "NIF vs fallback parity" do
+    @nif_person %NifPerson{
+      name: "Alice",
+      email: "alice@example.com",
+      city: "Portland",
+      country: "US",
+      bio: "Hello world",
+      age: 30,
+      active: true
+    }
+
+    test "basic NIF struct encodes correctly" do
+      json = RustyJson.encode!(@nif_person)
+      decoded = RustyJson.decode!(json)
+      assert decoded["name"] == "Alice"
+      assert decoded["email"] == "alice@example.com"
+      assert decoded["age"] == 30
+      assert decoded["active"] == true
+    end
+
+    test "NIF path matches fallback for :json escape" do
+      nif_result = RustyJson.encode!(@nif_person, escape: :json)
+
+      fallback_result =
+        IO.iodata_to_binary(RustyJson.Encoder.encode(@nif_person, RustyJson.Encode.opts(:json)))
+
+      assert RustyJson.decode!(nif_result) == RustyJson.decode!(fallback_result)
+    end
+
+    test "NIF path matches fallback for :html_safe escape" do
+      person = %NifPerson{@nif_person | name: "<script>alert('xss')</script>", bio: "a/b & c > d"}
+
+      nif_result = RustyJson.encode!(person, escape: :html_safe)
+
+      fallback_result =
+        IO.iodata_to_binary(RustyJson.Encoder.encode(person, RustyJson.Encode.opts(:html_safe)))
+
+      assert RustyJson.decode!(nif_result) == RustyJson.decode!(fallback_result)
+    end
+
+    test "NIF path matches fallback for :javascript_safe escape" do
+      person = %NifPerson{@nif_person | bio: "line\u2028separator\u2029end"}
+
+      nif_result = RustyJson.encode!(person, escape: :javascript_safe)
+
+      fallback_result =
+        IO.iodata_to_binary(
+          RustyJson.Encoder.encode(person, RustyJson.Encode.opts(:javascript_safe))
+        )
+
+      assert RustyJson.decode!(nif_result) == RustyJson.decode!(fallback_result)
+    end
+
+    test "NIF path matches fallback for :unicode_safe escape" do
+      person = %NifPerson{@nif_person | name: "Ünïcödé", bio: "日本語テスト"}
+
+      nif_result = RustyJson.encode!(person, escape: :unicode_safe)
+
+      fallback_result =
+        IO.iodata_to_binary(
+          RustyJson.Encoder.encode(person, RustyJson.Encode.opts(:unicode_safe))
+        )
+
+      assert RustyJson.decode!(nif_result) == RustyJson.decode!(fallback_result)
+    end
+
+    test "strings with special characters" do
+      person = %NifPerson{
+        @nif_person
+        | name: "line1\nline2\ttab",
+          email: "quote\"backslash\\end",
+          bio: "control\x01\x02chars"
+      }
+
+      json = RustyJson.encode!(person)
+      decoded = RustyJson.decode!(json)
+      assert decoded["name"] == "line1\nline2\ttab"
+      assert decoded["email"] == "quote\"backslash\\end"
+    end
+  end
+
+  describe "atom semantics in NIF structs" do
+    test "nil field encodes as JSON null" do
+      person = %NifPerson{@nif_person | bio: nil}
+      json = RustyJson.encode!(person)
+      decoded = RustyJson.decode!(json)
+      assert decoded["bio"] == nil
+    end
+
+    test "boolean fields encode correctly" do
+      person = %NifPerson{@nif_person | active: false}
+      json = RustyJson.encode!(person)
+      decoded = RustyJson.decode!(json)
+      assert decoded["active"] == false
+    end
+  end
+
+  describe "float semantics in derived structs" do
+    test "float field is pre-encoded to match Jason formatting" do
+      person = %NifPerson{@nif_person | age: 30.5}
+      json = RustyJson.encode!(person)
+      decoded = RustyJson.decode!(json)
+      assert decoded["age"] == 30.5
+    end
+
+    test "float edge cases match Jason" do
+      # Float field should use Elixir's float_to_binary(:short), same as Jason
+      person = %NifPerson{@nif_person | age: 0.1}
+      json = RustyJson.encode!(person)
+      decoded = RustyJson.decode!(json)
+      assert decoded["age"] == 0.1
+    end
+  end
+
+  describe "non-boolean atom semantics" do
+    test "atom values are pre-encoded as strings" do
+      # Non-boolean atoms like :ok should be pre-encoded via protocol
+      nested = %NifNested{
+        name: "test",
+        email: "a@b.com",
+        score: 10,
+        tags: [:ok, :error],
+        metadata: %{status: :active},
+        inner: nil
+      }
+
+      json = RustyJson.encode!(nested)
+      decoded = RustyJson.decode!(json)
+      assert decoded["tags"] == ["ok", "error"]
+    end
+  end
+
+  describe "nested structs in NIF path" do
+    test "nested derived struct" do
+      nested = %NifNested{
+        name: "outer",
+        email: "o@o.com",
+        score: 42,
+        tags: ["a", "b"],
+        metadata: %{x: 1},
+        inner: %InnerDerived{label: "inner", value: 99}
+      }
+
+      json = RustyJson.encode!(nested)
+      decoded = RustyJson.decode!(json)
+      assert decoded["name"] == "outer"
+      assert decoded["inner"]["label"] == "inner"
+      assert decoded["inner"]["value"] == 99
+    end
+
+    test "nested custom defimpl struct" do
+      nested = %NifNested{
+        name: "test",
+        email: "t@t.com",
+        score: 1,
+        tags: [],
+        metadata: %{},
+        inner: %Money{amount: 42, currency: :USD}
+      }
+
+      json = RustyJson.encode!(nested)
+      decoded = RustyJson.decode!(json)
+      assert decoded["inner"]["amount"] == 42
+      assert decoded["inner"]["currency"] == "USD"
+    end
+
+    test "nested Fragment" do
+      fragment = %RustyJson.Fragment{encode: ~s({"pre":"encoded"})}
+
+      nested = %NifNested{
+        name: "test",
+        email: "t@t.com",
+        score: 1,
+        tags: [],
+        metadata: %{},
+        inner: fragment
+      }
+
+      json = RustyJson.encode!(nested)
+      decoded = RustyJson.decode!(json)
+      assert decoded["inner"]["pre"] == "encoded"
+    end
+
+    test "list/map fields with safe primitives only" do
+      nested = %NifNested{
+        name: "test",
+        email: "t@t.com",
+        score: 1,
+        tags: ["hello", 42, true, nil],
+        metadata: %{a: 1, b: "two"},
+        inner: nil
+      }
+
+      json = RustyJson.encode!(nested)
+      decoded = RustyJson.decode!(json)
+      assert decoded["tags"] == ["hello", 42, true, nil]
+      assert decoded["metadata"]["a"] == 1
+      assert decoded["metadata"]["b"] == "two"
+    end
+  end
+
+  describe "size gate behavior" do
+    test "small struct (< 5 fields) uses fallback path" do
+      small = %SmallStruct{a: "hello", b: 42, c: true}
+      json = RustyJson.encode!(small)
+      decoded = RustyJson.decode!(json)
+      assert decoded["a"] == "hello"
+      assert decoded["b"] == 42
+      assert decoded["c"] == true
+    end
+
+    test "ints-only struct uses fallback path" do
+      ints = %IntsOnly{a: 1, b: 2, c: 3, d: 4, e: 5}
+      json = RustyJson.encode!(ints)
+      decoded = RustyJson.decode!(json)
+      assert decoded["a"] == 1
+      assert decoded["e"] == 5
+    end
+
+    test "5-field struct with binary uses NIF path" do
+      person = %NifPerson{
+        name: "Alice",
+        email: "a@b.com",
+        city: "NYC",
+        country: "US",
+        bio: "Hello",
+        age: 25,
+        active: true
+      }
+
+      json = RustyJson.encode!(person)
+      decoded = RustyJson.decode!(json)
+      assert decoded["name"] == "Alice"
+    end
+  end
+
+  describe "re-entrancy" do
+    test "Fragment function calling encode! recursively" do
+      inner = %NifPerson{
+        name: "inner",
+        email: "i@i.com",
+        city: "A",
+        country: "B",
+        bio: "C",
+        age: 1,
+        active: true
+      }
+
+      fragment = %RustyJson.Fragment{
+        encode: fn opts ->
+          # This calls encode! recursively — tests re-entrant process dict
+          inner_json = RustyJson.Encode.value(inner, opts)
+          [~s({"wrapper":), inner_json, ~s(})]
+        end
+      }
+
+      json = RustyJson.encode!(fragment)
+      decoded = RustyJson.decode!(json)
+      assert decoded["wrapper"]["name"] == "inner"
+    end
+
+    test "nested encode! calls preserve context" do
+      # Outer encode with html_safe, inner should also see html_safe
+      inner = %NifPerson{
+        name: "<b>bold</b>",
+        email: "a@b.com",
+        city: "A",
+        country: "B",
+        bio: "C",
+        age: 1,
+        active: true
+      }
+
+      json = RustyJson.encode!(%{data: inner}, escape: :html_safe)
+      # The inner struct's name should have HTML escaping applied
+      assert json =~ "\\u003c"
+      assert json =~ "\\u003e"
+    end
+  end
+
+  describe "strict keys with NIF structs" do
+    test "strict mode still works with derived structs" do
+      person = %NifPerson{
+        name: "Alice",
+        email: "a@b.com",
+        city: "NYC",
+        country: "US",
+        bio: "Hello",
+        age: 25,
+        active: true
+      }
+
+      # Struct keys are unique by definition, so strict should pass
+      assert {:ok, _} = RustyJson.encode(person, maps: :strict)
+    end
+  end
+
+  describe "Jason parity for derived structs" do
+    if Code.ensure_loaded?(Jason) do
+      test "basic derived struct matches Jason via map" do
+        # Use a plain map since NifPerson doesn't derive Jason.Encoder
+        data = %{
+          name: "Alice",
+          email: "alice@example.com",
+          city: "Portland",
+          country: "US",
+          bio: "Hello",
+          age: 30,
+          active: true
+        }
+
+        person = %NifPerson{
+          name: "Alice",
+          email: "alice@example.com",
+          city: "Portland",
+          country: "US",
+          bio: "Hello",
+          age: 30,
+          active: true
+        }
+
+        rusty = RustyJson.decode!(RustyJson.encode!(person))
+        jason = Jason.decode!(Jason.encode!(data))
+        assert rusty == jason
+      end
+
+      test "derived struct with special chars matches Jason via map" do
+        data = %{
+          name: "O'Brien \"the great\"",
+          email: "test@test.com",
+          city: "New\nYork",
+          country: "US",
+          bio: "tab\there",
+          age: 25,
+          active: false
+        }
+
+        person = %NifPerson{
+          name: "O'Brien \"the great\"",
+          email: "test@test.com",
+          city: "New\nYork",
+          country: "US",
+          bio: "tab\there",
+          age: 25,
+          active: false
+        }
+
+        rusty = RustyJson.decode!(RustyJson.encode!(person))
+        jason = Jason.decode!(Jason.encode!(data))
+        assert rusty == jason
       end
     end
   end

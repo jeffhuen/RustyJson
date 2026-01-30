@@ -4,10 +4,12 @@ Comprehensive benchmarks comparing RustyJson vs Jason across synthetic and real-
 
 ## Key Findings
 
-1. **Encoding is where RustyJson shines** - 3-6x faster, 2-3x less memory
-2. **Decoding is faster** (2-3x) but memory usage is similar (both produce identical Elixir terms)
-3. **Larger payloads = bigger advantage** - Real-world 10MB files show better results than synthetic benchmarks
-4. **BEAM scheduler load dramatically reduced** - 100-28,000x fewer reductions
+1. **Fast across all workloads** — plain data, struct-heavy data, and decoding (including deeply nested and small payloads)
+2. **Encoding plain data** shows the largest gains — 3-6x faster, 2-3x less memory
+3. **Struct encoding** optimized in v0.3.3 via single-pass iodata pipeline with compile-time codegen (~2x improvement over v0.3.2)
+4. **Deep-nested decode** optimized in v0.3.3 via single-entry fast path (~27% faster than v0.3.2 for 100-level nested JSON)
+5. **Larger payloads = bigger advantage** — real-world 10 MB files show better results than synthetic benchmarks
+6. **BEAM scheduler load dramatically reduced** — 100-28,000x fewer reductions
 
 ## Test Environment
 
@@ -58,6 +60,17 @@ Using standard datasets from [nativejson-benchmark](https://github.com/miloyip/n
 | citm_catalog.json | 1.6 MB | Event catalog (mixed types) |
 | twitter.json | 617 KB | Social media with CJK (unicode-heavy) |
 
+### Decode Performance (JSON → Elixir)
+
+| Input | RustyJson ips | Average |
+|-------|--------------|---------|
+| canada.json (2.1 MB) | 153 | 6.55 ms |
+| citm_catalog.json (1.6 MB) | 323 | 3.09 ms |
+| twitter.json (617 KB) | 430 | 2.33 ms |
+| large_list (50k items, 2.3 MB) | 62 | 16.0 ms |
+| deep_nested (1.1 KB, 100 levels) | 148K | 6.75 µs |
+| wide_object (75 KB, 5k keys) | 1,626 | 0.61 ms |
+
 ### Roundtrip Performance (Decode + Encode)
 
 | Input | RustyJson | Jason | Speedup |
@@ -73,6 +86,34 @@ Using standard datasets from [nativejson-benchmark](https://github.com/miloyip/n
 | canada.json | ~3,500 | ~964,000 | **275x fewer** |
 | citm_catalog.json | ~300 | ~621,000 | **2,000x fewer** |
 | twitter.json | ~2,000 | ~511,000 | **260x fewer** |
+
+## Struct Encoding Benchmarks (v0.3.3+)
+
+Encoding data that contains Elixir structs (e.g., `@derive RustyJson.Encoder` or custom `defimpl`) follows a different path than plain maps and lists. Structs require the `RustyJson.Encoder` protocol to convert them to JSON-serializable forms.
+
+In v0.3.3, the struct encoding pipeline was rewritten from a three-pass approach (protocol dispatch → fragment resolution → NIF serialization) to a single-pass iodata pipeline with compile-time codegen for derived structs. This closed the last remaining performance gap, making RustyJson faster across all encoding workloads.
+
+### Struct Encoding Performance
+
+| Workload | Speedup (v0.3.3 vs v0.3.2) |
+|----------|----------------------------|
+| Derived struct (5 fields) | ~2x faster |
+| Derived struct (10 fields) | ~2x faster |
+| Custom encoder (returning `Encode.map`) | ~2.5x faster |
+| List of 1,000 derived structs | ~2x faster |
+| Nested structs (3 levels deep) | ~2x faster |
+
+Measured with protocol consolidation enabled (`MIX_ENV=prod`), which is the default for production builds.
+
+### How It Works
+
+RustyJson's struct encoding produces iodata in a single pass:
+
+1. **Derived encoders** (`@derive RustyJson.Encoder`) generate compile-time iodata templates with pre-escaped keys — no runtime `Map.from_struct`, `Map.to_list`, or key escaping.
+2. **Map/List impls** detect struct-containing data and route through `Encode.map/2` / `Encode.list/2` to build iodata directly, wrapped in a `Fragment`.
+3. **NIF bypass** — When the top-level result is an iodata Fragment (no pretty-print or compression), `IO.iodata_to_binary/1` is used directly, avoiding Erlang↔Rust term conversion entirely.
+
+For plain data (no structs), encoding still uses the fast Rust NIF path unchanged.
 
 ## Why Encoding Shows Bigger Gains
 
@@ -238,11 +279,13 @@ RustyJson.decode!(json)  # default, no interning
 
 | Operation | Speed | Memory | Reductions |
 |-----------|-------|--------|------------|
-| **Encode (large)** | 5-6x faster | 2-3x less | 28,000x fewer |
-| **Encode (medium)** | 2-3x faster | 2-3x less | 200-2000x fewer |
-| **Decode** | 2-3x faster | similar | — |
-| **Decode (keys: :intern)** | +30% faster* | similar | — |
+| **Encode plain data (large)** | 5-6x | 2-3x less | 28,000x fewer |
+| **Encode plain data (medium)** | 2-3x | 2-3x less | 200-2000x fewer |
+| **Encode structs (v0.3.3+)** | ~2x improvement over v0.3.2 | similar | — |
+| **Decode (large)** | 2-4.5x | similar | — |
+| **Decode (deep nested, v0.3.3+)** | ~27% improvement over v0.3.2 | similar | — |
+| **Decode (keys: :intern)** | +30%* | similar | — |
 
 *For arrays of objects with repeated keys (API responses, DB results, etc.)
 
-**Bottom line**: RustyJson's biggest advantage is encoding large payloads, where it's 5-6x faster with 2-3x less memory and dramatically reduced BEAM scheduler load. For decoding bulk data, enable `keys: :intern` for an additional 30% speedup.
+**Bottom line**: As of v0.3.3, RustyJson is fast across all encoding and decoding workloads, including deeply nested and small payloads. Plain data encoding shows the largest gains (5-6x, 2-3x less memory, dramatically fewer BEAM reductions). Struct encoding was rewritten in v0.3.3 with a single-pass iodata pipeline. Deep-nested decode was optimized in v0.3.3 with a single-entry fast path that avoids heap allocation for single-element objects and arrays. For decoding bulk data, enable `keys: :intern` for an additional 30% speedup.

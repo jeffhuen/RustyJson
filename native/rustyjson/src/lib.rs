@@ -21,6 +21,7 @@ mod atoms {
     rustler::atoms! {
         encode,
         rustyjson_fragment = "Elixir.RustyJson.Fragment",
+        __pre_encoded__,
         // Encode option keys
         indent,
         compression,
@@ -227,4 +228,170 @@ fn decode_dirty<'a>(
     opts_map: Term<'a>,
 ) -> Result<Term<'a>, Error> {
     decode_impl(env, input, opts_map)
+}
+
+/// Shared encode_fields implementation used by both normal and dirty scheduler NIFs.
+///
+/// Takes pre-escaped key binaries and a values list. Each value is either:
+/// - A safe primitive (binary, integer, nil, true, false) → encoded by Rust
+/// - A {:__pre_encoded__, binary} tuple → bytes written directly
+///
+/// Returns a single JSON object binary: {"key1":val1,"key2":val2,...}
+fn encode_fields_impl<'a>(
+    env: Env<'a>,
+    keys: Term<'a>,
+    values: Term<'a>,
+    escape_mode_term: Term<'a>,
+    _strict_keys: Term<'a>,
+) -> Result<rustler::Binary<'a>, Error> {
+    let keys_list: Vec<Term<'a>> = keys.decode().map_err(|_| Error::BadArg)?;
+    let values_list: Vec<Term<'a>> = values.decode().map_err(|_| Error::BadArg)?;
+
+    if keys_list.len() != values_list.len() {
+        return Err(Error::RaiseTerm(Box::new(
+            "keys and values lists must have the same length".to_string(),
+        )));
+    }
+
+    let escape_mode = direct_json::EscapeMode::from_term(escape_mode_term);
+    let pre_encoded_atom = atoms::__pre_encoded__();
+
+    // Estimate initial capacity: { + keys + values + separators
+    let mut output: Vec<u8> = Vec::with_capacity(64 + keys_list.len() * 32);
+    output.push(b'{');
+
+    for (i, (key_term, val_term)) in keys_list.iter().zip(values_list.iter()).enumerate() {
+        if i > 0 {
+            output.push(b',');
+        }
+
+        // Write pre-escaped key (e.g. "\"name\":")
+        let key_bin: rustler::Binary = key_term
+            .decode()
+            .map_err(|_| Error::RaiseTerm(Box::new("key must be a binary".to_string())))?;
+        output.extend_from_slice(key_bin.as_slice());
+
+        // Write value
+        write_field_value(&mut output, *val_term, escape_mode, pre_encoded_atom)
+            .map_err(|e| Error::RaiseTerm(Box::new(e.to_string())))?;
+    }
+
+    output.push(b'}');
+
+    let mut bin = rustler::NewBinary::new(env, output.len());
+    bin.as_mut_slice().copy_from_slice(&output);
+    Ok(bin.into())
+}
+
+/// Write a single field value to the output buffer.
+fn write_field_value(
+    output: &mut Vec<u8>,
+    term: Term,
+    escape_mode: direct_json::EscapeMode,
+    pre_encoded_atom: rustler::types::atom::Atom,
+) -> Result<(), std::io::Error> {
+    use std::io::Write;
+
+    match term.get_type() {
+        rustler::TermType::Atom => {
+            if let Ok(s) = term.atom_to_string() {
+                match s.as_str() {
+                    "true" => output.write_all(b"true")?,
+                    "false" => output.write_all(b"false")?,
+                    "nil" => output.write_all(b"null")?,
+                    _ => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("unsupported atom in encode_fields: {}", s),
+                        ));
+                    }
+                }
+            }
+        }
+        rustler::TermType::Binary => {
+            let binary: rustler::Binary = term.decode().map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "Failed to decode binary")
+            })?;
+            let bytes = binary.as_slice();
+            match std::str::from_utf8(bytes) {
+                Ok(s) => direct_json::write_json_string_escaped_pub(s, output, escape_mode)?,
+                Err(_) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Failed to decode binary as UTF-8",
+                    ));
+                }
+            }
+        }
+        rustler::TermType::Integer => {
+            direct_json::write_integer_pub(term, output)?;
+        }
+        rustler::TermType::Tuple => {
+            // Check for {:__pre_encoded__, binary} tuple
+            let items = rustler::types::tuple::get_tuple(term).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "Failed to decode tuple")
+            })?;
+            if items.len() == 2 {
+                let tag: rustler::types::atom::Atom = items[0].decode().map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "tuple tag must be an atom",
+                    )
+                })?;
+                if tag == pre_encoded_atom {
+                    let binary: rustler::Binary = items[1].decode().map_err(|_| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "pre-encoded value must be a binary",
+                        )
+                    })?;
+                    output.write_all(binary.as_slice())?;
+                } else {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "unsupported tuple in encode_fields",
+                    ));
+                }
+            } else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "unsupported tuple in encode_fields",
+                ));
+            }
+        }
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "unsupported term type in encode_fields: {:?}",
+                    term.get_type()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Encode struct fields on normal scheduler
+#[rustler::nif(name = "nif_encode_fields")]
+fn encode_fields<'a>(
+    env: Env<'a>,
+    keys: Term<'a>,
+    values: Term<'a>,
+    escape_mode: Term<'a>,
+    strict_keys: Term<'a>,
+) -> Result<rustler::Binary<'a>, Error> {
+    encode_fields_impl(env, keys, values, escape_mode, strict_keys)
+}
+
+/// Encode struct fields on dirty CPU scheduler
+#[rustler::nif(name = "nif_encode_fields_dirty", schedule = "DirtyCpu")]
+fn encode_fields_dirty<'a>(
+    env: Env<'a>,
+    keys: Term<'a>,
+    values: Term<'a>,
+    escape_mode: Term<'a>,
+    strict_keys: Term<'a>,
+) -> Result<rustler::Binary<'a>, Error> {
+    encode_fields_impl(env, keys, values, escape_mode, strict_keys)
 }

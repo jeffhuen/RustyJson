@@ -2,7 +2,7 @@ defmodule RustyJson.Fragment do
   @moduledoc """
   Represents pre-encoded JSON that should be injected directly into output.
 
-  Fragments come in two forms:
+  Fragments come in three forms:
 
   ## Static Fragments (iodata)
 
@@ -26,9 +26,18 @@ defmodule RustyJson.Fragment do
 
   The function receives a keyword list of options (e.g., `[escape: :html_safe, maps: :naive]`)
   and must return iodata.
+
+  ## Raw iodata Fragments
+
+  Used internally by `RustyJson.Encoder` Map and List implementations.
+  When encoding data that contains structs or tuples, these impls produce
+  Fragments with raw iodata (from `RustyJson.Encode.map/2` or
+  `RustyJson.Encode.list/2`) instead of intermediate data structures. This
+  enables single-pass serialization — the NIF writes the pre-built iodata
+  directly rather than re-walking the tree.
   """
 
-  @type t :: %__MODULE__{encode: (term() -> iodata())}
+  @type t :: %__MODULE__{encode: iodata() | (term() -> iodata())}
 
   defstruct [:encode]
 
@@ -64,4 +73,6 @@ defimpl RustyJson.Encoder, for: RustyJson.Fragment do
   def encode(%RustyJson.Fragment{encode: encode}, opts) when is_function(encode, 1) do
     %RustyJson.Fragment{encode: encode.(opts)}
   end
+
+  def encode(%RustyJson.Fragment{} = frag, _opts), do: frag
 end

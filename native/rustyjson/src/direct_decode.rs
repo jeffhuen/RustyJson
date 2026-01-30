@@ -568,10 +568,34 @@ impl<'a, 'b> DirectParser<'a, 'b> {
             return Ok(Term::list_new_empty(self.env));
         }
 
-        // Estimate capacity based on remaining input size (rough heuristic)
+        // Parse first element on stack before allocating
+        let first = self.parse_value()?;
+        self.skip_whitespace();
+
+        match self.peek() {
+            Some(b']') => {
+                // Single-element fast path: no Vec allocation
+                self.advance();
+                self.depth -= 1;
+                return Ok(Term::list_new_empty(self.env).list_prepend(first));
+            }
+            Some(b',') => {
+                self.advance();
+                self.skip_whitespace();
+            }
+            _ => return Err(self.err("Expected ',' or ']'")),
+        }
+
+        // Multi-element: allocate Vec and continue
         let remaining = self.input.len() - self.pos;
-        let estimated_capacity = (remaining / 20).clamp(8, 1024);
-        let mut elements = Vec::with_capacity(estimated_capacity);
+        let estimated = (remaining / 20).clamp(1, 1024);
+        let cap = if self.depth > 1 {
+            estimated.min(8)
+        } else {
+            estimated
+        };
+        let mut elements = Vec::with_capacity(cap + 1);
+        elements.push(first);
 
         loop {
             let elem = self.parse_value()?;
@@ -615,37 +639,84 @@ impl<'a, 'b> DirectParser<'a, 'b> {
             self.advance();
             self.depth -= 1;
             if self.opts.ordered_objects {
-                return self.build_ordered_object(vec![], vec![], obj_start);
+                return self.build_ordered_object(&[], &[], obj_start);
             }
             return Ok(Term::map_new(self.env));
         }
 
-        // Estimate capacity based on remaining input size
-        let remaining = self.input.len() - self.pos;
-        let estimated_capacity = (remaining / 30).clamp(4, 256);
-        let mut keys = Vec::with_capacity(estimated_capacity);
-        let mut values = Vec::with_capacity(estimated_capacity);
+        // Parse first key-value pair on stack before allocating
+        if self.peek() != Some(b'"') {
+            return Err(self.err("Expected string key"));
+        }
+        let first_key_start = self.pos;
+        let first_key = self.parse_key()?;
+        let first_key_end = self.pos;
 
-        // Optional duplicate key tracking
+        self.skip_whitespace();
+        if self.peek() != Some(b':') {
+            return Err(self.err("Expected ':'"));
+        }
+        self.advance();
+        self.skip_whitespace();
+        let first_value = self.parse_value()?;
+
+        self.skip_whitespace();
+        match self.peek() {
+            Some(b'}') => {
+                // Single-entry fast path: no Vec/HashSet allocation
+                self.advance();
+                self.depth -= 1;
+                if self.opts.ordered_objects {
+                    return self.build_ordered_object(&[first_key], &[first_value], obj_start);
+                }
+                return Term::map_from_term_arrays(self.env, &[first_key], &[first_value])
+                    .map_err(|_| ("Failed to create map".to_string(), obj_start));
+            }
+            Some(b',') => {
+                self.advance();
+                self.skip_whitespace();
+            }
+            _ => return Err(self.err("Expected ',' or '}'")),
+        }
+
+        // Multi-entry path: allocate Vecs and continue
+        let remaining = self.input.len() - self.pos;
+        let estimated = (remaining / 30).clamp(1, 256);
+        let cap = if self.depth > 1 {
+            estimated.min(8)
+        } else {
+            estimated
+        };
+        let mut keys = Vec::with_capacity(cap + 1);
+        let mut values = Vec::with_capacity(cap + 1);
+        keys.push(first_key);
+        values.push(first_value);
+
+        // Optional duplicate key tracking (only needed for multi-entry objects)
+        let seen_cap = if self.depth > 1 {
+            estimated.min(16)
+        } else {
+            estimated
+        };
         let mut seen_keys: Option<HashSet<Vec<u8>>> = if self.opts.reject_duplicate_keys {
-            Some(HashSet::with_capacity(estimated_capacity))
+            let mut set = HashSet::with_capacity(seen_cap);
+            // Insert first key's raw bytes (between opening and closing quotes)
+            let raw_first = &self.input[first_key_start + 1..first_key_end - 1];
+            set.insert(raw_first.to_vec());
+            Some(set)
         } else {
             None
         };
 
         loop {
-            // Parse key (use parse_key for potential interning)
             if self.peek() != Some(b'"') {
                 return Err(self.err("Expected string key"));
             }
             let key_start = self.pos;
             let key = self.parse_key()?;
 
-            // Check for duplicate keys if enabled — uses raw input bytes
-            // (the region between quotes) rather than the decoded Term
+            // Check for duplicate keys if enabled
             if let Some(ref mut seen) = seen_keys {
-                // key_start is the opening quote, self.pos is after closing quote
-                // The raw key content is between opening quote + 1 and closing quote - 1
                 let raw_key = &self.input[key_start + 1..self.pos - 1];
                 if !seen.insert(raw_key.to_vec()) {
                     return Err(("Duplicate key in object".to_string(), self.pos));
@@ -661,7 +732,6 @@ impl<'a, 'b> DirectParser<'a, 'b> {
             self.advance();
             self.skip_whitespace();
 
-            // Parse value
             let value = self.parse_value()?;
             values.push(value);
 
@@ -682,7 +752,7 @@ impl<'a, 'b> DirectParser<'a, 'b> {
         self.depth -= 1;
 
         if self.opts.ordered_objects {
-            return self.build_ordered_object(keys, values, obj_start);
+            return self.build_ordered_object(&keys, &values, obj_start);
         }
 
         // Fast path: no duplicate keys (common case)
@@ -690,7 +760,7 @@ impl<'a, 'b> DirectParser<'a, 'b> {
             Ok(map) => Ok(map),
             Err(_) => {
                 // Slow path: duplicate keys detected, use "last wins" semantics
-                self.build_map_with_duplicates(keys, values, obj_start)
+                self.build_map_with_duplicates(&keys, &values, obj_start)
             }
         }
     }
@@ -699,8 +769,8 @@ impl<'a, 'b> DirectParser<'a, 'b> {
     /// Pass empty vecs for an empty ordered object.
     fn build_ordered_object(
         &self,
-        keys: Vec<Term<'a>>,
-        values: Vec<Term<'a>>,
+        keys: &[Term<'a>],
+        values: &[Term<'a>],
         pos: usize,
     ) -> Result<Term<'a>, (String, usize)> {
         let env = self.env;
@@ -726,8 +796,8 @@ impl<'a, 'b> DirectParser<'a, 'b> {
     #[cold]
     fn build_map_with_duplicates(
         &self,
-        keys: Vec<Term<'a>>,
-        values: Vec<Term<'a>>,
+        keys: &[Term<'a>],
+        values: &[Term<'a>],
         pos: usize,
     ) -> Result<Term<'a>, (String, usize)> {
         // Extract key bytes and deduplicate

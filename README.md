@@ -137,7 +137,7 @@ The real benefit is **reduced BEAM scheduler load** - JSON processing happens in
 
 - **Best for**: Large payloads (1MB+), API responses, data exports
 - **Decoding bulk data**: Use `keys: :intern` for arrays of objects (API responses, DB results)
-- **Equal to Jason**: Small payloads (<1KB) due to NIF call overhead
+- **Small payloads**: Competitive on small and deeply nested JSON (optimized in v0.3.3)
 - **Biggest wins**: Encoding large structures, decoding homogeneous arrays
 
 See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for detailed methodology.
@@ -156,10 +156,13 @@ These types are handled natively in Rust without protocol overhead:
 | `Time` | `"14:30:00"` |
 | `Decimal` | `"123.45"` |
 | `URI` | `"https://example.com"` |
-| `MapSet` | `[1, 2, 3]` |
-| `Range` | `{"first": 1, "last": 10}` |
 | Structs | Object without `__struct__` |
 | Tuples | Arrays |
+
+> **Note:** `MapSet` and `Range` are **not** encoded by default. They raise
+> `Protocol.UndefinedError` with `protocol: true` (the default), matching Jason's
+> behavior. Use `protocol: false` to encode them via the Rust NIF directly
+> (`MapSet` → array, `Range` → object), or add an explicit `RustyJson.Encoder` impl.
 
 ### Options
 
@@ -241,6 +244,8 @@ Most Rust JSON libraries for Elixir use [serde](https://serde.rs/) to convert be
 
 RustyJson eliminates the middle step by walking the Erlang term tree directly and writing JSON bytes without intermediate Rust structures.
 
+**Native type handling in Rust:** Common Elixir types — DateTime, Decimal, URI — are encoded directly in Rust without any Elixir-side transformation. The encoder protocol walk passes these types through unchanged, and Rust formats them natively during serialization. This reduces BEAM work and intermediate allocations compared to libraries that must transform every type in Elixir before handing off to Rust. Custom user types still go through the Elixir encoder protocol as expected. (`MapSet` and `Range` are only handled natively when using `protocol: false`; with the default `protocol: true`, they raise `Protocol.UndefinedError` to match Jason.)
+
 ### Key Optimizations
 
 **Custom Direct Encoder:**
@@ -252,6 +257,7 @@ RustyJson eliminates the middle step by walking the Erlang term tree directly an
 **Custom Direct Decoder:**
 - Parses JSON while building Erlang terms (no intermediate AST)
 - Zero-copy strings for unescaped content
+- Single-entry fast path for objects and arrays (avoids heap allocation for deeply nested JSON)
 - [lexical-core](https://github.com/Alexhuszagh/rust-lexical) for fast number parsing
 
 **Memory Allocator:**
