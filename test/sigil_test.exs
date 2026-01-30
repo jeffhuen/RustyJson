@@ -24,8 +24,9 @@ defmodule SigilTest do
     end
 
     test "with atoms! modifier" do
-      result = ~j({"some_unique_sigil_key": 1})A
-      assert result == %{some_unique_sigil_key: 1}
+      # Use a well-known atom (:name) that already exists
+      result = ~j({"name": "Alice"})A
+      assert result == %{name: "Alice"}
     end
 
     test "with interpolation" do

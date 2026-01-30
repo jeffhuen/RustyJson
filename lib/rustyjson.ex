@@ -123,6 +123,10 @@ defmodule RustyJson do
 
          RustyJson.decode!(json, keys: :intern)
 
+     The intern cache is capped at 4096 unique keys. Beyond that, new keys are
+     allocated normally — this bounds worst-case CPU time and stops paying cache
+     overhead when keys aren't being reused.
+
      **Caution**: Don't use for single objects or varied schemas—cache overhead
      makes it 2-3x *slower* when keys aren't reused.
 
@@ -182,7 +186,10 @@ defmodule RustyJson do
   - `:atoms` - Convert to atoms using `String.to_atom/1` (unsafe with untrusted input)
   - `:atoms!` - Convert to existing atoms using `String.to_existing_atom/1` (safe, raises if missing)
   - `:copy` - Copy key binaries (same as `:strings` in RustyJson since NIFs always copy)
-  - `:intern` - Cache repeated keys during parsing (~30% faster for arrays of objects)
+  - `:intern` - Cache repeated keys during parsing (~30% faster for arrays of objects).
+    The cache is capped at 4096 unique keys — beyond this, new keys are allocated normally.
+    This bounds worst-case CPU time and avoids cache overhead for pathological inputs
+    with many distinct keys. The cap is internal and not user-configurable.
   - A function of arity 1 - Applied to each key string recursively
   """
   @type keys :: :strings | :atoms | :atoms! | :copy | :intern | (String.t() -> term())
@@ -217,6 +224,7 @@ defmodule RustyJson do
           | {:protocol, boolean()}
           | {:lean, boolean()}
           | {:maps, :naive | :strict}
+          | {:scheduler, :auto | :normal | :dirty}
 
   @typedoc """
   Options for `decode/2` and `decode!/2`.
@@ -227,6 +235,18 @@ defmodule RustyJson do
   - `:floats` - How to decode JSON floats. `:native` (default) or `:decimals`
   - `:decoding_integer_digit_limit` - Maximum digits in integer part. 0 disables.
     Default: 1024, or the value of `Application.compile_env(:rustyjson, :decoding_integer_digit_limit)`
+  - `:max_bytes` - Maximum input size in bytes. 0 means unlimited (default).
+    The check is performed using `IO.iodata_length/1` *before* converting to binary,
+    avoiding the memory spike from allocating the full binary.
+  - `:duplicate_keys` - How to handle duplicate object keys. `:last` (default) uses
+    last-wins semantics. `:error` rejects objects with duplicate keys.
+    **Performance note**: `:error` adds per-key overhead from HashSet tracking.
+    Use only when strict validation is needed.
+  - `:validate_strings` - Whether to validate that decoded strings contain valid UTF-8.
+    Default: `false`. When `true`, rejects strings with invalid UTF-8 byte sequences.
+  - `:dirty_threshold` - Byte size threshold for auto-dispatching to dirty CPU scheduler.
+    When input size >= this threshold, decode runs on a dirty scheduler to avoid blocking
+    normal BEAM schedulers. Default: 102400 (100KB). Set to 0 to disable.
   """
   @type decode_opt ::
           {:keys, keys()}
@@ -234,6 +254,16 @@ defmodule RustyJson do
           | {:objects, :maps | :ordered_objects}
           | {:floats, :native | :decimals}
           | {:decoding_integer_digit_limit, non_neg_integer()}
+          | {:max_bytes, non_neg_integer()}
+          | {:duplicate_keys, :last | :error}
+          | {:validate_strings, boolean()}
+          | {:dirty_threshold, non_neg_integer()}
+
+  @default_dirty_threshold_bytes Application.compile_env(
+                                   :rustyjson,
+                                   :dirty_threshold_bytes,
+                                   102_400
+                                 )
 
   @default_integer_digit_limit Application.compile_env(
                                  :rustyjson,
@@ -266,6 +296,15 @@ defmodule RustyJson do
   @doc false
   @spec nif_decode(String.t(), map()) :: term()
   defp nif_decode(_input, _opts_map), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec nif_encode_direct_dirty(term(), map()) :: String.t()
+  defp nif_encode_direct_dirty(_input, _opts_map),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  @spec nif_decode_dirty(String.t(), map()) :: term()
+  defp nif_decode_dirty(_input, _opts_map), do: :erlang.nif_error(:nif_not_loaded)
 
   # ============================================================================
   # Encoding API
@@ -389,7 +428,9 @@ defmodule RustyJson do
     {use_protocol, opts} = Keyword.pop(opts, :protocol, true)
     {lean, opts} = Keyword.pop(opts, :lean, false)
     {maps_mode, opts} = Keyword.pop(opts, :maps, :naive)
+    {scheduler, opts} = Keyword.pop(opts, :scheduler, :auto)
     validate_option!(maps_mode, [:naive, :strict], :maps)
+    validate_option!(scheduler, [:auto, :normal, :dirty], :scheduler)
 
     # Extract pretty print separator opts
     {pretty_opts, indent} = normalize_pretty_opts(indent)
@@ -421,7 +462,15 @@ defmodule RustyJson do
       pretty_opts: pretty_opts
     }
 
-    nif_encode_direct(processed, nif_opts)
+    # Determine which NIF to call based on scheduler option
+    uses_compression = match?({:gzip, _}, compression)
+    use_dirty = scheduler == :dirty or (scheduler == :auto and uses_compression)
+
+    if use_dirty do
+      nif_encode_direct_dirty(processed, nif_opts)
+    else
+      nif_encode_direct(processed, nif_opts)
+    end
   rescue
     e in [ErlangError] ->
       raise_encode_error(e)
@@ -445,6 +494,9 @@ defmodule RustyJson do
     * `:copy` - Copy key binaries (equivalent to `:strings` in RustyJson)
     * `:intern` - Cache repeated keys during parsing. **~30% faster** for arrays of
       objects with the same schema (REST APIs, GraphQL, database results, webhooks).
+      The cache is capped at 4096 unique keys; beyond that, new keys are allocated
+      normally (no worse than default). This bounds worst-case CPU time and stops
+      paying cache overhead when keys aren't being reused.
       **Caution**: 2-3x slower for single objects or varied schemas—only use for
       homogeneous arrays of 10+ objects.
     * A function of arity 1 - Applied recursively to each key string.
@@ -552,9 +604,27 @@ defmodule RustyJson do
   @spec decode!(iodata(), [decode_opt()]) :: term()
   def decode!(input, opts \\ []) do
     {keys, nif_opts, validated_opts} = parse_decode_opts(opts)
+
+    max_bytes = Map.get(nif_opts, :max_bytes, 0)
+
+    if max_bytes > 0 do
+      input_size = IO.iodata_length(input)
+
+      if input_size > max_bytes do
+        raise %RustyJson.DecodeError{
+          message: "input size #{input_size} exceeds max_bytes limit of #{max_bytes}",
+          position: 0
+        }
+      end
+    end
+
     input_binary = IO.iodata_to_binary(input)
 
-    result = nif_decode_with_error_handling(input_binary, nif_opts)
+    dirty_threshold = validated_opts[:dirty_threshold]
+    use_dirty = dirty_threshold > 0 and byte_size(input_binary) >= dirty_threshold
+
+    nif_fn = if use_dirty, do: &nif_decode_dirty/2, else: &nif_decode/2
+    result = nif_decode_with_error_handling(input_binary, nif_opts, nif_fn)
     maybe_transform_keys(result, keys, validated_opts)
   end
 
@@ -733,13 +803,19 @@ defmodule RustyJson do
     {objects_mode, opts} = Keyword.pop(opts, :objects, :maps)
     {floats_mode, opts} = Keyword.pop(opts, :floats, :native)
 
-    {digit_limit, _opts} =
+    {digit_limit, opts} =
       Keyword.pop(opts, :decoding_integer_digit_limit, @default_integer_digit_limit)
+
+    {max_bytes, opts} = Keyword.pop(opts, :max_bytes, 0)
+    {duplicate_keys, opts} = Keyword.pop(opts, :duplicate_keys, :last)
+    {validate_strings, opts} = Keyword.pop(opts, :validate_strings, false)
+    {dirty_threshold, _opts} = Keyword.pop(opts, :dirty_threshold, @default_dirty_threshold_bytes)
 
     validate_keys!(keys)
     validate_option!(strings_mode, [:copy, :reference], :strings)
     validate_option!(objects_mode, [:maps, :ordered_objects], :objects)
     validate_option!(floats_mode, [:native, :decimals], :floats)
+    validate_option!(duplicate_keys, [:last, :error], :duplicate_keys)
 
     {intern_keys, keys_fn} =
       case keys do
@@ -752,16 +828,19 @@ defmodule RustyJson do
       intern_keys: intern_keys,
       floats_decimals: floats_mode == :decimals,
       ordered_objects: objects_mode == :ordered_objects,
-      integer_digit_limit: digit_limit
+      integer_digit_limit: digit_limit,
+      max_bytes: max_bytes,
+      reject_duplicate_keys: duplicate_keys == :error,
+      validate_strings: validate_strings == true
     }
 
-    {keys, nif_opts, %{keys_fn: keys_fn}}
+    {keys, nif_opts, %{keys_fn: keys_fn, dirty_threshold: dirty_threshold}}
   end
 
   # Call the NIF decoder, converting ErlangError to DecodeError.
   # Extracted to avoid `raise` inside `rescue` (Credo W: reraise).
-  defp nif_decode_with_error_handling(input_binary, nif_opts) do
-    nif_decode(input_binary, nif_opts)
+  defp nif_decode_with_error_handling(input_binary, nif_opts, nif_fn) do
+    nif_fn.(input_binary, nif_opts)
   rescue
     e in [ErlangError] ->
       raise_decode_error(e, input_binary)

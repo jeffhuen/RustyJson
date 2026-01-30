@@ -71,13 +71,18 @@ defmodule EncoderTest do
     end
 
     test "lean mode (skips native type handling)" do
-      # In lean mode, Time struct is encoded as a raw map of its fields
-      # Note: __struct__ is always stripped by the encoder, even in lean mode
-      encoded = RustyJson.encode!(~T[12:00:00], lean: true)
-      decoded = RustyJson.decode!(encoded)
+      time = ~T[12:00:00]
 
+      # Normal mode: Time encodes to ISO8601 string via Encoder protocol
+      normal = RustyJson.encode!(time)
+      assert normal == ~s("12:00:00")
+
+      # Lean mode: Time encodes as raw struct fields (no protocol dispatch)
+      lean = RustyJson.encode!(time, lean: true)
+      assert lean != normal
+
+      decoded = RustyJson.decode!(lean)
       assert %{"hour" => 12, "minute" => 0, "second" => 0} = decoded
-      assert decoded["__struct__"] == nil
     end
   end
 
@@ -131,6 +136,16 @@ defmodule EncoderTest do
 
       assert_raise ArgumentError, fn ->
         RustyJson.encode!(%{foo: "bar"}, compress: {:gzip, "foo"})
+      end
+    end
+
+    test "invalid gzip compression level" do
+      assert_raise ArgumentError, fn ->
+        RustyJson.encode!(%{a: 1}, compress: {:gzip, -1})
+      end
+
+      assert_raise ArgumentError, fn ->
+        RustyJson.encode!(%{a: 1}, compress: {:gzip, 10})
       end
     end
   end

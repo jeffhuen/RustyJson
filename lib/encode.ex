@@ -393,7 +393,7 @@ defmodule RustyJson.Encode do
   end
 
   defp escape_json(<<>>, original, skip, len, acc) do
-    [acc | binary_part(original, skip, len)]
+    [acc, binary_part(original, skip, len)]
   end
 
   # HTML-safe mode — additionally escapes <, >, &, /
@@ -441,7 +441,7 @@ defmodule RustyJson.Encode do
   end
 
   defp escape_html(<<>>, original, skip, len, acc) do
-    [acc | binary_part(original, skip, len)]
+    [acc, binary_part(original, skip, len)]
   end
 
   # Unicode-safe mode — escapes all non-ASCII codepoints
@@ -483,7 +483,7 @@ defmodule RustyJson.Encode do
   end
 
   defp escape_unicode(<<>>, original, skip, len, acc) do
-    [acc | binary_part(original, skip, len)]
+    [acc, binary_part(original, skip, len)]
   end
 
   # JavaScript-safe mode — escapes U+2028 and U+2029 (line/paragraph separators)
@@ -532,7 +532,7 @@ defmodule RustyJson.Encode do
   end
 
   defp escape_javascript(<<>>, original, skip, len, acc) do
-    [acc | binary_part(original, skip, len)]
+    [acc, binary_part(original, skip, len)]
   end
 
   # Helpers

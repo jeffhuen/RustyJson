@@ -163,6 +163,8 @@ We enforce limits that prevent resource exhaustion:
 |----------|-------|-----------|
 | Nesting depth | 128 levels | Prevents stack overflow, per RFC 7159 |
 | Recursion | Bounded by depth | No unbounded recursion possible |
+| Intern cache keys | 4096 unique keys | Bounds hash collision worst-case; stops cache overhead for pathological input |
+| Input size | Configurable (`max_bytes`) | Prevents memory exhaustion from oversized payloads |
 | Allocation | System memory | Same as pure Elixir |
 
 ### What Would Actually Need to Go Wrong?
@@ -558,11 +560,11 @@ The performance gains come from:
 3. **Single output buffer** - One allocation instead of many iolist fragments
 4. **Good memory allocator** - mimalloc reduces fragmentation
 
-### Why We Don't Use Dirty Schedulers
+### Scheduler Strategy
 
 BEAM documentation recommends NIFs complete in under 1 millisecond to maintain scheduler fairness. RustyJson exceeds this for large payloads (10 MB encode takes ~24ms). Dirty schedulers run NIFs on separate threads to avoid blocking normal schedulers.
 
-We benchmarked dirty schedulers and found they **hurt performance**:
+We benchmarked dirty schedulers and found they **hurt performance for small payloads**:
 
 | Payload | Normal | Dirty | Result |
 |---------|--------|-------|--------|
@@ -570,19 +572,19 @@ We benchmarked dirty schedulers and found they **hurt performance**:
 | 10 KB encode | 177 µs | 136 µs | Dirty 23% faster |
 | 5 MB encode | 43 ms | 43 ms | Similar |
 
-Under concurrent load (50 processes), normal schedulers had **1.7x higher throughput** for encoding and **2.2x higher** for decoding.
+Under concurrent load (50 processes), normal schedulers had **1.7x higher throughput** for encoding and **2.2x higher** for decoding with small payloads.
 
-**Why dirty schedulers hurt**:
+**Why dirty schedulers hurt for small payloads**:
 1. **Migration overhead** - Process must migrate to dirty scheduler pool and back
 2. **Limited pool** - Only N dirty CPU schedulers (N = CPU cores), creating bottlenecks
 3. **Cache effects** - Different thread means cold CPU caches
 
-**Why exceeding 1ms is acceptable here**:
-1. **28,000x fewer reductions** - Work is offloaded to native code, freeing BEAM schedulers for other processes
-2. **Net scheduler impact is lower** - Pure-Elixir encoders use the scheduler for the entire duration with high reduction counts; RustyJson uses it briefly with minimal reductions
-3. **Isolated processes** - Phoenix requests run in separate processes; one encode doesn't block others
+**Hybrid approach**: Now that the library is mature, RustyJson offers automatic dispatch that avoids the small-payload penalty while protecting against scheduler blocking on large inputs:
 
-This is not a safety tradeoff—the NIF is memory-safe regardless of scheduler type. It's a practical decision: dirty schedulers add overhead without benefit.
+- **Decode**: Auto-dispatches to dirty scheduler when `byte_size(input) >= dirty_threshold` (default: 100KB). This is a cheap check and a reasonable proxy for work. Set `dirty_threshold: 0` to disable.
+- **Encode**: Explicit opt-in via `scheduler: :dirty`. Can't cheaply estimate output size, so auto-dispatch is only triggered when `compress: :gzip` is used (compression is always CPU-heavy). Use `scheduler: :normal` to force normal scheduler.
+
+This preserves the performance advantage for small payloads (the common case) while preventing scheduler blocking for large inputs.
 
 ## Decode Strategies
 
@@ -626,13 +628,15 @@ Reuse "name" reference (object 2)  ← cache hit
 
 **Implementation details:**
 
-*Hasher choice:* We use a hand-rolled FNV-1a hasher instead of Rust's default SipHash. SipHash is cryptographically strong (HashDoS resistant) but slower. For a per-parse cache with short JSON keys, FNV-1a provides ~3x faster lookups with no security downside—an attacker can't observe timing, and worst-case collision just means an extra allocation (no worse than default mode).
+*Hasher choice:* We use a hand-rolled FNV-1a hasher with a per-parse randomized seed instead of Rust's default SipHash. SipHash is DoS-resistant but ~3x slower for short keys, which would negate the performance benefit of interning. The randomized seed (time + stack address) blocks precomputed collision tables. An adaptive attacker measuring aggregate decode latency across many requests could still craft collisions, but the `MAX_INTERN_KEYS` cap (see below) bounds the damage to O(cap²) operations — a few milliseconds, not a DoS.
 
 *Parser design:* Rather than duplicating string parsing logic, we refactored to `parse_string_impl(for_key: bool)`. This single implementation handles both string values (`for_key: false`) and object keys (`for_key: true`), with interning logic gated behind the `for_key` flag and cache presence check. This avoids code duplication while ensuring interning overhead is zero when disabled.
 
 *Escaped keys:* Keys containing escape sequences (e.g., `"field\nname"`) are NOT interned. The raw JSON bytes (`field\nname`) differ from the decoded string (`field<newline>name`), so we can't use the input slice as a cache key. This is rare in practice—object keys almost never contain escapes.
 
-*Memory:* Cache is pre-allocated with 32 slots and grows as needed. Dropped automatically when parsing completes (no cleanup required).
+*Cache cap:* The cache stops accepting new entries after `MAX_INTERN_KEYS` (4096) unique keys. Beyond that threshold, new keys are allocated normally (no worse than default mode without interning). This serves two purposes: (1) **performance** — when unique key count is high, the cache is clearly not helping and growing it further is pure overhead; (2) **DoS mitigation** — bounds worst-case CPU time from hash collisions to O(4096²) operations regardless of hash quality. The cap is internal and not user-configurable; 4096 is far above any realistic JSON schema key count.
+
+*Memory:* Cache is pre-allocated with 32 slots and grows as needed up to the cap. Dropped automatically when parsing completes (no cleanup required).
 
 **When to use `keys: :intern`:**
 

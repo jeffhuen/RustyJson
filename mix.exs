@@ -1,7 +1,7 @@
 defmodule RustyJson.MixProject do
   use Mix.Project
 
-  @version "0.3.0"
+  @version "0.3.1"
 
   def project do
     [
@@ -92,7 +92,13 @@ defmodule RustyJson.MixProject do
         Internals: ["docs/ARCHITECTURE.md", "docs/BENCHMARKS.md"]
       ],
       groups_for_modules: [
-        Encoding: [RustyJson, RustyJson.Encoder, RustyJson.Encode, RustyJson.Fragment, RustyJson.Helpers],
+        Encoding: [
+          RustyJson,
+          RustyJson.Encoder,
+          RustyJson.Encode,
+          RustyJson.Fragment,
+          RustyJson.Helpers
+        ],
         Decoding: [RustyJson.Decoder, RustyJson.OrderedObject],
         Formatting: [RustyJson.Formatter, RustyJson.Sigil],
         Errors: [RustyJson.EncodeError, RustyJson.DecodeError]

@@ -35,6 +35,9 @@ mod atoms {
         floats_decimals,
         ordered_objects,
         integer_digit_limit,
+        max_bytes,
+        reject_duplicate_keys,
+        validate_strings,
         // Struct construction atoms
         __struct__,
         decimal_struct = "Elixir.Decimal",
@@ -73,11 +76,8 @@ fn get_opt_bool<'a>(
     get_opt(env, map, key, default)
 }
 
-/// Direct encode - manually walks the term tree and writes JSON
-/// Supports pretty printing, compression, and built-in type handling
-/// No dirty scheduler - fast enough for normal scheduler
-#[rustler::nif(name = "nif_encode_direct")]
-fn encode_direct<'a>(
+/// Shared encode implementation used by both normal and dirty scheduler NIFs
+fn encode_direct_impl<'a>(
     env: Env<'a>,
     term: Term,
     opts_map: Term<'a>,
@@ -171,11 +171,12 @@ fn encode_direct<'a>(
     }
 }
 
-/// Direct decode - custom parser that builds Erlang terms during parsing
-/// Uses lexical-core for fast number parsing, zero-copy strings when possible
-/// No dirty scheduler - fast enough for normal scheduler
-#[rustler::nif(name = "nif_decode")]
-fn decode<'a>(env: Env<'a>, input: rustler::Binary, opts_map: Term<'a>) -> Result<Term<'a>, Error> {
+/// Shared decode implementation used by both normal and dirty scheduler NIFs
+fn decode_impl<'a>(
+    env: Env<'a>,
+    input: rustler::Binary,
+    opts_map: Term<'a>,
+) -> Result<Term<'a>, Error> {
     let slice = input.as_slice();
 
     // Parse options from Elixir map
@@ -184,7 +185,46 @@ fn decode<'a>(env: Env<'a>, input: rustler::Binary, opts_map: Term<'a>) -> Resul
         floats_decimals: get_opt_bool(env, opts_map, atoms::floats_decimals(), false),
         ordered_objects: get_opt_bool(env, opts_map, atoms::ordered_objects(), false),
         integer_digit_limit: get_opt(env, opts_map, atoms::integer_digit_limit(), 1024usize),
+        max_bytes: get_opt(env, opts_map, atoms::max_bytes(), 0usize),
+        reject_duplicate_keys: get_opt_bool(env, opts_map, atoms::reject_duplicate_keys(), false),
+        validate_strings: get_opt_bool(env, opts_map, atoms::validate_strings(), false),
     };
 
     direct_decode::json_to_term(env, slice, decode_opts).map_err(|e| Error::RaiseTerm(Box::new(e)))
+}
+
+/// Direct encode on normal scheduler
+#[rustler::nif(name = "nif_encode_direct")]
+fn encode_direct<'a>(
+    env: Env<'a>,
+    term: Term,
+    opts_map: Term<'a>,
+) -> Result<rustler::Binary<'a>, Error> {
+    encode_direct_impl(env, term, opts_map)
+}
+
+/// Direct encode on dirty CPU scheduler for large payloads
+#[rustler::nif(name = "nif_encode_direct_dirty", schedule = "DirtyCpu")]
+fn encode_direct_dirty<'a>(
+    env: Env<'a>,
+    term: Term,
+    opts_map: Term<'a>,
+) -> Result<rustler::Binary<'a>, Error> {
+    encode_direct_impl(env, term, opts_map)
+}
+
+/// Direct decode on normal scheduler
+#[rustler::nif(name = "nif_decode")]
+fn decode<'a>(env: Env<'a>, input: rustler::Binary, opts_map: Term<'a>) -> Result<Term<'a>, Error> {
+    decode_impl(env, input, opts_map)
+}
+
+/// Direct decode on dirty CPU scheduler for large payloads
+#[rustler::nif(name = "nif_decode_dirty", schedule = "DirtyCpu")]
+fn decode_dirty<'a>(
+    env: Env<'a>,
+    input: rustler::Binary,
+    opts_map: Term<'a>,
+) -> Result<Term<'a>, Error> {
+    decode_impl(env, input, opts_map)
 }

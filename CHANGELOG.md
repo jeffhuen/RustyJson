@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-01-29
+
+### Added - Robustness & Security
+
+#### Decode Options
+
+- **`max_bytes`** — Maximum input size in bytes (default: `0`, unlimited). The check uses `IO.iodata_length/1` *before* `IO.iodata_to_binary/1` to avoid allocating a contiguous binary for oversized input. Also enforced defensively in the NIF.
+- **`duplicate_keys: :last | :error`** — Opt-in strict duplicate key rejection (default: `:last`, preserving last-wins semantics). When `:error`, tracks seen keys via `HashSet` in the Rust parser and returns a `DecodeError` on the first duplicate. **Performance note**: adds per-key overhead when enabled — use only when strict validation is needed.
+- **`validate_strings: true | false`** — Opt-in UTF-8 validation for decoded strings (default: `false`). When `true`, calls `std::str::from_utf8()` on both escaped and non-escaped string paths, rejecting invalid byte sequences with a `DecodeError`.
+- **`dirty_threshold`** — Byte size threshold for auto-dispatching decode to a dirty CPU scheduler (default: `102_400` / 100 KB, configurable at compile time via `Application.compile_env(:rustyjson, :dirty_threshold_bytes)`). Set to `0` to disable. Prevents large inputs from blocking normal BEAM schedulers.
+
+#### Encode Options
+
+- **`scheduler: :auto | :normal | :dirty`** — Controls which scheduler the encode NIF runs on (default: `:auto`). `:auto` promotes to dirty only when `compress: :gzip` is used (compression is always CPU-heavy). `:dirty` always uses the dirty CPU scheduler. `:normal` always uses the normal scheduler.
+
+### Changed
+
+#### Scheduler Strategy
+
+- Added dirty CPU scheduler NIF variants (`nif_encode_direct_dirty`, `nif_decode_dirty`) alongside the existing normal-scheduler NIFs. Both variants share the same implementation — only the scheduler annotation differs.
+- Updated `docs/ARCHITECTURE.md`: renamed "Why We Don't Use Dirty Schedulers" to "Scheduler Strategy" explaining the hybrid approach (normal by default, dirty for large payloads or compression).
+
+#### Security Hardening
+
+- **Randomized FNV hasher seed** — The `FnvBuildHasher` used for `keys: :intern` key caching now generates a per-parse random seed by mixing `std::time::SystemTime` with a stack address. This blocks precomputed hash collision tables without adding any dependencies or measurable overhead. Previously used a fixed FNV offset basis (`0xcbf29ce484222325`). Note: the seed is not cryptographic — an adaptive attacker measuring aggregate latency could still craft collisions. The intern cache cap (below) bounds the damage in that scenario.
+- **Intern cache cap (4096 keys)** — The `keys: :intern` cache stops accepting new entries after 4096 unique keys. Beyond that, new keys are allocated normally (no worse than default mode). This serves dual purposes: (1) bounds worst-case CPU time from hash collisions to O(4096²) operations regardless of hash quality; (2) stops paying cache overhead when the input clearly has too many unique keys for interning to help. The cap is internal and not user-configurable.
+
+### Testing
+
+- 412 tests, all passing with 0 failures.
+- New test coverage: key interning correctness, `max_bytes` limits (including iodata input), duplicate key detection (including nested objects), UTF-8 string validation (single-byte and multi-byte), dirty scheduler dispatch for both encode and decode.
+
+### Release Notes
+
+Adding new NIF exports (`nif_encode_direct_dirty`, `nif_decode_dirty`) changes the compiled artifact. This requires rebuilding precompiled binaries and updating checksums.
+
 ## [0.3.0] - 2026-01-28
 
 ### Breaking Changes
@@ -230,6 +266,7 @@ No regressions. Relative speedup vs Jason is unchanged from v0.2.0.
 - Zero-copy string handling in decoder for unescaped strings
 - 256-byte lookup table for O(1) escape detection
 
+[0.3.1]: https://github.com/jeffhuen/rustyjson/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/jeffhuen/rustyjson/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jeffhuen/rustyjson/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/jeffhuen/rustyjson/compare/v0.1.0...v0.1.1

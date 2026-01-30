@@ -597,9 +597,14 @@ defmodule DecoderTest do
 
   describe "decode with decoding_integer_digit_limit (Gap 9)" do
     test "default limit of 1024 digits" do
-      # Integer within limit should work
-      json = ~s({"n":123456789})
-      assert {:ok, _} = RustyJson.decode(json)
+      # Exactly 1024 digits should succeed
+      at_limit = String.duplicate("1", 1024)
+      assert {:ok, _} = RustyJson.decode(at_limit)
+
+      # 1025 digits should fail
+      over_limit = String.duplicate("1", 1025)
+      assert {:error, %RustyJson.DecodeError{message: msg}} = RustyJson.decode(over_limit)
+      assert msg =~ "digit limit"
     end
 
     test "rejects integers exceeding digit limit" do

@@ -63,11 +63,11 @@ defmodule JasonParityTest do
     end
 
     test "float 1.0e10 - known representation difference" do
-      # RustyJson uses :erlang.float_to_binary with [:short] which may produce
-      # different representations than Jason for some floats.
-      # Both decode back to the same float value.
       r = RustyJson.encode!(1.0e10)
       j = Jason.encode!(1.0e10)
+      # Representations differ (e.g., "10000000000.0" vs "1.0e10")
+      assert r != j, "expected different representations, got #{r} for both"
+      # But both decode to the same float value
       assert RustyJson.decode!(r) == Jason.decode!(j)
     end
 

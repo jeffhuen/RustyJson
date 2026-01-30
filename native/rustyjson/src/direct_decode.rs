@@ -1,11 +1,29 @@
 use crate::atoms;
 use num_bigint::BigInt;
 use rustler::{types::atom, Encoder, Env, NewBinary, Term};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
 
 /// Maximum nesting depth to prevent stack overflow
 const MAX_DEPTH: usize = 128;
+
+/// Maximum number of unique keys the intern cache will store.
+/// Beyond this limit, new keys are allocated normally (no cache insertion).
+///
+/// This serves two purposes:
+/// 1. **Performance**: `keys: :intern` is designed for homogeneous arrays with
+///    few unique keys (5-50 typical). When unique key count is high, cache misses
+///    dominate and interning becomes overhead. Capping stops paying the cost of
+///    HashMap insertion once the cache is clearly not helping.
+/// 2. **DoS mitigation**: Bounds worst-case CPU time from hash collisions.
+///    With FNV-1a + randomized seed, precomputed collision attacks are blocked.
+///    The cap additionally bounds the damage from adaptive collision attacks
+///    (attacker measuring aggregate decode latency across many requests) to
+///    O(MAX_INTERN_KEYS²) operations — a few milliseconds, not a DoS.
+///
+/// The value 4096 is chosen to be far above any realistic JSON schema key count
+/// while still bounding worst-case behavior to acceptable levels.
+const MAX_INTERN_KEYS: usize = 4096;
 
 /// Options controlling decode behavior, parsed from the Elixir opts map.
 pub struct DecodeOptions {
@@ -13,6 +31,9 @@ pub struct DecodeOptions {
     pub floats_decimals: bool,
     pub ordered_objects: bool,
     pub integer_digit_limit: usize,
+    pub max_bytes: usize,
+    pub reject_duplicate_keys: bool,
+    pub validate_strings: bool,
 }
 
 impl Default for DecodeOptions {
@@ -22,6 +43,9 @@ impl Default for DecodeOptions {
             floats_decimals: false,
             ordered_objects: false,
             integer_digit_limit: 1024,
+            max_bytes: 0,
+            reject_duplicate_keys: false,
+            validate_strings: false,
         }
     }
 }
@@ -51,20 +75,35 @@ impl Hasher for FnvHasher {
     }
 }
 
-struct FnvBuildHasher;
+struct FnvBuildHasher {
+    seed: u64,
+}
+
+impl FnvBuildHasher {
+    fn new() -> Self {
+        // Per-parse seed: mix time + stack address for uniqueness.
+        // Not cryptographic — blocks precomputed collision tables, but an
+        // adaptive attacker measuring aggregate latency across many requests
+        // could still craft collisions. The MAX_INTERN_KEYS cap bounds the
+        // damage in that scenario to O(cap²) operations.
+        let stack_anchor: u64 = 0;
+        let addr = &stack_anchor as *const u64 as u64;
+        let time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        Self {
+            seed: addr.wrapping_mul(0x517cc1b727220a95) ^ time,
+        }
+    }
+}
 
 impl BuildHasher for FnvBuildHasher {
     type Hasher = FnvHasher;
 
     #[inline]
     fn build_hasher(&self) -> FnvHasher {
-        FnvHasher(0xcbf29ce484222325) // FNV offset basis
-    }
-}
-
-impl Default for FnvBuildHasher {
-    fn default() -> Self {
-        FnvBuildHasher
+        FnvHasher(self.seed) // Use random seed instead of fixed offset basis
     }
 }
 
@@ -87,7 +126,10 @@ impl<'a, 'b> DirectParser<'a, 'b> {
     #[inline]
     pub fn new(env: Env<'a>, input: &'b [u8], opts: DecodeOptions) -> Self {
         let key_cache = if opts.intern_keys {
-            Some(FastHashMap::with_capacity_and_hasher(32, FnvBuildHasher))
+            Some(FastHashMap::with_capacity_and_hasher(
+                32,
+                FnvBuildHasher::new(),
+            ))
         } else {
             None
         };
@@ -204,10 +246,18 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                         let decoded = self
                             .decode_escaped_string(start, end)
                             .map_err(|msg| (msg, string_start))?;
+                        if self.opts.validate_strings && std::str::from_utf8(&decoded).is_err() {
+                            return Err(("Invalid UTF-8 in string".to_string(), string_start));
+                        }
                         return Ok(encode_binary(self.env, &decoded));
                     }
 
                     let str_bytes = &self.input[start..end];
+
+                    // Optional UTF-8 validation for non-escaped strings
+                    if self.opts.validate_strings && std::str::from_utf8(str_bytes).is_err() {
+                        return Err(("Invalid UTF-8 in string".to_string(), string_start));
+                    }
 
                     // Key interning: check cache if enabled and parsing a key.
                     if for_key {
@@ -216,7 +266,12 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                                 return Ok(cached);
                             }
                             let term = encode_binary(self.env, str_bytes);
-                            cache.insert(str_bytes, term);
+                            // Only insert if below the cap. Beyond MAX_INTERN_KEYS,
+                            // the cache is not helping (too many unique keys) and
+                            // continuing to grow it adds cost without benefit.
+                            if cache.len() < MAX_INTERN_KEYS {
+                                cache.insert(str_bytes, term);
+                            }
                             return Ok(term);
                         }
                     }
@@ -571,12 +626,32 @@ impl<'a, 'b> DirectParser<'a, 'b> {
         let mut keys = Vec::with_capacity(estimated_capacity);
         let mut values = Vec::with_capacity(estimated_capacity);
 
+        // Optional duplicate key tracking
+        let mut seen_keys: Option<HashSet<Vec<u8>>> = if self.opts.reject_duplicate_keys {
+            Some(HashSet::with_capacity(estimated_capacity))
+        } else {
+            None
+        };
+
         loop {
             // Parse key (use parse_key for potential interning)
             if self.peek() != Some(b'"') {
                 return Err(self.err("Expected string key"));
             }
+            let key_start = self.pos;
             let key = self.parse_key()?;
+
+            // Check for duplicate keys if enabled — uses raw input bytes
+            // (the region between quotes) rather than the decoded Term
+            if let Some(ref mut seen) = seen_keys {
+                // key_start is the opening quote, self.pos is after closing quote
+                // The raw key content is between opening quote + 1 and closing quote - 1
+                let raw_key = &self.input[key_start + 1..self.pos - 1];
+                if !seen.insert(raw_key.to_vec()) {
+                    return Err(("Duplicate key in object".to_string(), self.pos));
+                }
+            }
+
             keys.push(key);
 
             self.skip_whitespace();
@@ -695,5 +770,15 @@ pub fn json_to_term<'a>(
     json: &[u8],
     opts: DecodeOptions,
 ) -> Result<Term<'a>, (String, usize)> {
+    if opts.max_bytes > 0 && json.len() > opts.max_bytes {
+        return Err((
+            format!(
+                "input size {} exceeds max_bytes limit of {}",
+                json.len(),
+                opts.max_bytes
+            ),
+            0,
+        ));
+    }
     DirectParser::new(env, json, opts).parse()
 }
