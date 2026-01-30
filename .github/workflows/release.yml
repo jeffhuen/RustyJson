@@ -7,9 +7,6 @@ on:
         description: 'Version to build (e.g., 0.1.0) - must match mix.exs'
         required: true
         type: string
-  push:
-    tags:
-      - 'v*'
 
 permissions:
   contents: write
@@ -40,13 +37,7 @@ jobs:
 
       - name: Set project version
         shell: bash
-        run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "PROJECT_VERSION=${{ inputs.version }}" >> $GITHUB_ENV
-          else
-            # Extract from tag (v0.1.0 -> 0.1.0)
-            echo "PROJECT_VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
-          fi
+        run: echo "PROJECT_VERSION=${{ inputs.version }}" >> $GITHUB_ENV
 
       - name: Verify version matches mix.exs
         shell: bash
@@ -85,6 +76,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.PROJECT_VERSION }}
-          draft: ${{ github.event_name == 'workflow_dispatch' }}
+          draft: true
           files: |
             ${{ steps.build-crate.outputs.file-path }}
