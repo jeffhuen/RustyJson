@@ -26,18 +26,7 @@ defmodule JsonTestSuiteTest do
     "i_number_real_underflow.json",
     "i_number_too_big_neg_int.json",
     "i_number_too_big_pos_int.json",
-    "i_number_very_big_negative_int.json",
-    # Invalid UTF-8 sequences passed through (not validated)
-    "i_string_UTF-8_invalid_sequence.json",
-    "i_string_UTF8_surrogate_U+D800.json",
-    "i_string_invalid_utf-8.json",
-    "i_string_iso_latin_1.json",
-    "i_string_lone_utf8_continuation_byte.json",
-    "i_string_not_in_unicode_range.json",
-    "i_string_overlong_sequence_2_bytes.json",
-    "i_string_overlong_sequence_6_bytes.json",
-    "i_string_overlong_sequence_6_bytes_null.json",
-    "i_string_truncated-utf-8.json"
+    "i_number_very_big_negative_int.json"
   ]
 
   @implementation_rejects [
@@ -47,6 +36,17 @@ defmodule JsonTestSuiteTest do
     "i_number_pos_double_huge_exp.json",
     "i_number_real_neg_overflow.json",
     "i_number_real_pos_overflow.json",
+    # Invalid UTF-8 sequences rejected (validate_strings defaults to true)
+    "i_string_UTF-8_invalid_sequence.json",
+    "i_string_UTF8_surrogate_U+D800.json",
+    "i_string_invalid_utf-8.json",
+    "i_string_iso_latin_1.json",
+    "i_string_lone_utf8_continuation_byte.json",
+    "i_string_not_in_unicode_range.json",
+    "i_string_overlong_sequence_2_bytes.json",
+    "i_string_overlong_sequence_6_bytes.json",
+    "i_string_overlong_sequence_6_bytes_null.json",
+    "i_string_truncated-utf-8.json",
     # Lone surrogates in \uXXXX escapes (per RFC 7493 I-JSON)
     "i_object_key_lone_2nd_surrogate.json",
     "i_string_1st_surrogate_but_2nd_missing.json",

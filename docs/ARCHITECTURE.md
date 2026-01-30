@@ -527,11 +527,11 @@ RustyJson also passes the [nativejson-benchmark](https://github.com/miloyip/nati
 
 For the 35 implementation-defined tests (`i_*`), RustyJson makes these choices:
 
-**Accepted (15 tests):**
+**Accepted (5 tests):**
 - Numbers that underflow to zero or convert to large integers
-- Invalid UTF-8 byte sequences in strings (passed through without validation)
 
-**Rejected (20 tests):**
+**Rejected (30 tests):**
+- Invalid UTF-8 byte sequences in strings (`validate_strings` defaults to `true`, matching Jason)
 - Numbers with exponents that overflow (e.g., `1e9999`)
 - Lone Unicode surrogates in `\uXXXX` escapes (per RFC 7493 I-JSON)
 - Non-UTF-8 encodings (UTF-16, BOM)

@@ -120,9 +120,18 @@ defmodule SafetyTest do
   end
 
   describe "UTF-8 string validation" do
-    test "invalid UTF-8 accepted by default" do
+    test "invalid UTF-8 rejected by default" do
       input = <<34, 0xFF, 34>>
-      assert {:ok, _} = RustyJson.decode(input)
+
+      assert {:error, %RustyJson.DecodeError{message: msg}} =
+               RustyJson.decode(input)
+
+      assert msg =~ "Invalid UTF-8"
+    end
+
+    test "invalid UTF-8 accepted with validate_strings: false" do
+      input = <<34, 0xFF, 34>>
+      assert {:ok, _} = RustyJson.decode(input, validate_strings: false)
     end
 
     test "invalid UTF-8 rejected with validate_strings: true" do

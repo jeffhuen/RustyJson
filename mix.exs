@@ -1,7 +1,7 @@
 defmodule RustyJson.MixProject do
   use Mix.Project
 
-  @version "0.3.1"
+  @version "0.3.2"
 
   def project do
     [
@@ -63,6 +63,7 @@ defmodule RustyJson.MixProject do
         "lib",
         "mix.exs",
         "README*",
+        "CHANGELOG.md",
         "LICENSE",
         "docs",
         "native/rustyjson/src",

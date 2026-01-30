@@ -187,7 +187,7 @@ fn decode_impl<'a>(
         integer_digit_limit: get_opt(env, opts_map, atoms::integer_digit_limit(), 1024usize),
         max_bytes: get_opt(env, opts_map, atoms::max_bytes(), 0usize),
         reject_duplicate_keys: get_opt_bool(env, opts_map, atoms::reject_duplicate_keys(), false),
-        validate_strings: get_opt_bool(env, opts_map, atoms::validate_strings(), false),
+        validate_strings: get_opt_bool(env, opts_map, atoms::validate_strings(), true),
     };
 
     direct_decode::json_to_term(env, slice, decode_opts).map_err(|e| Error::RaiseTerm(Box::new(e)))

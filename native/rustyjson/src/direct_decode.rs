@@ -45,7 +45,7 @@ impl Default for DecodeOptions {
             integer_digit_limit: 1024,
             max_bytes: 0,
             reject_duplicate_keys: false,
-            validate_strings: false,
+            validate_strings: true,
         }
     }
 }

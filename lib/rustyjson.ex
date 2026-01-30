@@ -243,7 +243,8 @@ defmodule RustyJson do
     **Performance note**: `:error` adds per-key overhead from HashSet tracking.
     Use only when strict validation is needed.
   - `:validate_strings` - Whether to validate that decoded strings contain valid UTF-8.
-    Default: `false`. When `true`, rejects strings with invalid UTF-8 byte sequences.
+    Default: `true`. When `true`, rejects strings with invalid UTF-8 byte sequences.
+    Set to `false` to skip validation for maximum throughput on trusted input.
   - `:dirty_threshold` - Byte size threshold for auto-dispatching to dirty CPU scheduler.
     When input size >= this threshold, decode runs on a dirty scheduler to avoid blocking
     normal BEAM schedulers. Default: 102400 (100KB). Set to 0 to disable.
@@ -808,7 +809,7 @@ defmodule RustyJson do
 
     {max_bytes, opts} = Keyword.pop(opts, :max_bytes, 0)
     {duplicate_keys, opts} = Keyword.pop(opts, :duplicate_keys, :last)
-    {validate_strings, opts} = Keyword.pop(opts, :validate_strings, false)
+    {validate_strings, opts} = Keyword.pop(opts, :validate_strings, true)
     {dirty_threshold, _opts} = Keyword.pop(opts, :dirty_threshold, @default_dirty_threshold_bytes)
 
     validate_keys!(keys)
