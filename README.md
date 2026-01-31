@@ -137,7 +137,7 @@ The real benefit is **reduced BEAM scheduler load** - JSON processing happens in
 
 - **Best for**: Large payloads (1MB+), API responses, data exports
 - **Decoding bulk data**: Use `keys: :intern` for arrays of objects (API responses, DB results)
-- **Small payloads**: Competitive on small and deeply nested JSON (optimized in v0.3.3)
+- **Small payloads**: Competitive on small and deeply nested JSON (SIMD-optimized in v0.3.4)
 - **Biggest wins**: Encoding large structures, decoding homogeneous arrays
 
 See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for detailed methodology.

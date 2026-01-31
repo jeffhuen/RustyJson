@@ -1,11 +1,37 @@
 use crate::atoms;
 use num_bigint::BigInt;
-use rustler::{types::atom, Encoder, Env, NewBinary, Term};
+use rustler::{types::atom, Binary, Encoder, Env, NewBinary, Term};
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
 
 /// Maximum nesting depth to prevent stack overflow
 const MAX_DEPTH: usize = 128;
+
+/// AVX2 string scanner: skip 32 plain bytes per iteration.
+/// Must be called only after `is_x86_feature_detected!("avx2")`.
+/// The `#[target_feature]` attribute tells LLVM to emit AVX2 instructions
+/// for this function regardless of the global target CPU.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn simd_skip_string_avx2(input: &[u8], pos: &mut usize) {
+    use std::arch::x86_64::*;
+    let quote = _mm256_set1_epi8(b'"' as i8);
+    let backslash = _mm256_set1_epi8(b'\\' as i8);
+    let bound = _mm256_set1_epi8(0x1F);
+
+    while *pos + 32 <= input.len() {
+        let chunk = _mm256_loadu_si256(input.as_ptr().add(*pos) as *const __m256i);
+        let eq_quote = _mm256_cmpeq_epi8(chunk, quote);
+        let eq_backslash = _mm256_cmpeq_epi8(chunk, backslash);
+        let is_control = _mm256_cmpeq_epi8(_mm256_min_epu8(chunk, bound), chunk);
+        let combined = _mm256_or_si256(_mm256_or_si256(eq_quote, eq_backslash), is_control);
+        if _mm256_testz_si256(combined, combined) == 1 {
+            *pos += 32;
+        } else {
+            break;
+        }
+    }
+}
 
 /// Maximum number of unique keys the intern cache will store.
 /// Beyond this limit, new keys are allocated normally (no cache insertion).
@@ -115,6 +141,9 @@ pub struct DirectParser<'a, 'b> {
     pos: usize,
     depth: usize,
     env: Env<'a>,
+    /// The original input binary, used to create zero-copy sub-binary
+    /// references for non-escaped strings instead of allocating + copying.
+    input_binary: Binary<'a>,
     /// Optional key cache for interning repeated object keys.
     /// Only allocated when `intern_keys=true`.
     key_cache: Option<FastHashMap<&'b [u8], Term<'a>>>,
@@ -124,7 +153,12 @@ pub struct DirectParser<'a, 'b> {
 
 impl<'a, 'b> DirectParser<'a, 'b> {
     #[inline]
-    pub fn new(env: Env<'a>, input: &'b [u8], opts: DecodeOptions) -> Self {
+    pub fn new(
+        env: Env<'a>,
+        input: &'b [u8],
+        input_binary: Binary<'a>,
+        opts: DecodeOptions,
+    ) -> Self {
         let key_cache = if opts.intern_keys {
             Some(FastHashMap::with_capacity_and_hasher(
                 32,
@@ -138,6 +172,7 @@ impl<'a, 'b> DirectParser<'a, 'b> {
             pos: 0,
             depth: 0,
             env,
+            input_binary,
             key_cache,
             opts,
         }
@@ -166,8 +201,8 @@ impl<'a, 'b> DirectParser<'a, 'b> {
 
     #[inline(always)]
     fn skip_whitespace(&mut self) {
-        while let Some(&byte) = self.input.get(self.pos) {
-            match byte {
+        while self.pos < self.input.len() {
+            match self.input[self.pos] {
                 b' ' | b'\t' | b'\n' | b'\r' => self.pos += 1,
                 _ => break,
             }
@@ -226,6 +261,15 @@ impl<'a, 'b> DirectParser<'a, 'b> {
 
     /// Core string parsing logic. When `for_key` is true and we have a cache,
     /// attempts to intern non-escaped strings.
+    ///
+    /// Uses two optimizations:
+    /// - **8-byte batch scanning**: Checks 8 bytes at a time for the common case
+    ///   of plain ASCII strings (no escapes, no control chars, no closing quote).
+    ///   Falls back to byte-at-a-time when a special byte is found.
+    /// - **Zero-copy sub-binaries**: Non-escaped strings return a sub-binary
+    ///   reference into the original input, avoiding allocation and memcpy.
+    ///   Only escaped strings (containing `\"`, `\\`, `\n`, `\uXXXX`, etc.)
+    ///   allocate a new binary.
     #[inline]
     fn parse_string_impl(&mut self, for_key: bool) -> Result<Term<'a>, (String, usize)> {
         let string_start = self.pos;
@@ -233,10 +277,91 @@ impl<'a, 'b> DirectParser<'a, 'b> {
         let start = self.pos;
         let mut has_escape = false;
 
-        // Fast path: scan for end quote, checking for escapes
-        while let Some(b) = self.peek() {
-            match b {
-                b'"' => {
+        // SIMD string scanning: skip plain bytes in bulk.
+        //   - aarch64: NEON 16 bytes/iter (baseline on all ARM64)
+        //   - x86_64:  AVX2 32 bytes/iter (runtime-detected), SSE2 16 bytes/iter fallback
+        //   - other:   8-byte scalar fallback
+        loop {
+            #[cfg(target_arch = "aarch64")]
+            {
+                use std::arch::aarch64::*;
+                unsafe {
+                    let quote = vdupq_n_u8(b'"');
+                    let backslash = vdupq_n_u8(b'\\');
+                    let control_bound = vdupq_n_u8(0x20);
+
+                    while self.pos + 16 <= self.input.len() {
+                        let chunk = vld1q_u8(self.input.as_ptr().add(self.pos));
+                        let eq_quote = vceqq_u8(chunk, quote);
+                        let eq_backslash = vceqq_u8(chunk, backslash);
+                        let is_control = vcltq_u8(chunk, control_bound);
+                        let combined = vorrq_u8(vorrq_u8(eq_quote, eq_backslash), is_control);
+                        if vmaxvq_u8(combined) == 0 {
+                            self.pos += 16;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            #[cfg(target_arch = "x86_64")]
+            {
+                use std::arch::x86_64::*;
+
+                // AVX2: 32 bytes/iter on Haswell+ (2013+), runtime-detected
+                if is_x86_feature_detected!("avx2") {
+                    unsafe { simd_skip_string_avx2(self.input, &mut self.pos) };
+                }
+
+                // SSE2 cleanup: handle remaining 16-byte chunks (also used
+                // as primary path on pre-Haswell x86_64 where AVX2 is absent)
+                unsafe {
+                    let quote = _mm_set1_epi8(b'"' as i8);
+                    let backslash = _mm_set1_epi8(b'\\' as i8);
+                    let bound = _mm_set1_epi8(0x1F);
+
+                    while self.pos + 16 <= self.input.len() {
+                        let chunk =
+                            _mm_loadu_si128(self.input.as_ptr().add(self.pos) as *const __m128i);
+                        let eq_quote = _mm_cmpeq_epi8(chunk, quote);
+                        let eq_backslash = _mm_cmpeq_epi8(chunk, backslash);
+                        let is_control = _mm_cmpeq_epi8(_mm_min_epu8(chunk, bound), chunk);
+                        let combined =
+                            _mm_or_si128(_mm_or_si128(eq_quote, eq_backslash), is_control);
+                        if _mm_movemask_epi8(combined) == 0 {
+                            self.pos += 16;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Scalar fallback for other architectures (riscv64, etc.)
+            #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+            {
+                while self.pos + 8 <= self.input.len() {
+                    let chunk = &self.input[self.pos..self.pos + 8];
+                    let mut all_plain = true;
+                    for i in 0..8 {
+                        let b = chunk[i];
+                        if b < 0x20 || b == b'"' || b == b'\\' {
+                            all_plain = false;
+                            break;
+                        }
+                    }
+                    if all_plain {
+                        self.pos += 8;
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            // Byte-at-a-time for remainder or when a special byte is nearby
+            match self.peek() {
+                Some(b'"') => {
                     let end = self.pos;
                     self.advance(); // Skip closing quote
 
@@ -265,10 +390,8 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                             if let Some(&cached) = cache.get(str_bytes) {
                                 return Ok(cached);
                             }
+                            // For interned keys, we must copy (cache needs stable term).
                             let term = encode_binary(self.env, str_bytes);
-                            // Only insert if below the cap. Beyond MAX_INTERN_KEYS,
-                            // the cache is not helping (too many unique keys) and
-                            // continuing to grow it adds cost without benefit.
                             if cache.len() < MAX_INTERN_KEYS {
                                 cache.insert(str_bytes, term);
                             }
@@ -276,9 +399,20 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                         }
                     }
 
-                    return Ok(encode_binary(self.env, str_bytes));
+                    // For short strings, copying to a heap binary is faster than
+                    // sub-binary overhead. For longer strings (>=64 bytes),
+                    // zero-copy sub-binary avoids allocation + memcpy.
+                    let len = end - start;
+                    if len >= 64 {
+                        return Ok(unsafe {
+                            self.input_binary.make_subbinary_unchecked(start, len)
+                        }
+                        .to_term(self.env));
+                    } else {
+                        return Ok(encode_binary(self.env, str_bytes));
+                    }
                 }
-                b'\\' => {
+                Some(b'\\') => {
                     has_escape = true;
                     self.advance();
                     if self.peek().is_some() {
@@ -286,13 +420,15 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                     }
                 }
                 // JSON spec: control characters (0x00-0x1F) must be escaped
-                0x00..=0x1F => {
+                Some(0x00..=0x1F) => {
                     return Err(self.err("Unescaped control character"));
                 }
-                _ => self.advance(),
+                Some(_) => self.advance(),
+                None => {
+                    return Err(("Unterminated string".to_string(), string_start));
+                }
             }
         }
-        Err(("Unterminated string".to_string(), string_start))
     }
 
     /// Parse a string value (not interned)
@@ -837,9 +973,10 @@ fn encode_binary<'a>(env: Env<'a>, bytes: &[u8]) -> Term<'a> {
 #[inline]
 pub fn json_to_term<'a>(
     env: Env<'a>,
-    json: &[u8],
+    input_binary: &Binary<'a>,
     opts: DecodeOptions,
 ) -> Result<Term<'a>, (String, usize)> {
+    let json = input_binary.as_slice();
     if opts.max_bytes > 0 && json.len() > opts.max_bytes {
         return Err((
             format!(
@@ -850,5 +987,5 @@ pub fn json_to_term<'a>(
             0,
         ));
     }
-    DirectParser::new(env, json, opts).parse()
+    DirectParser::new(env, json, *input_binary, opts).parse()
 }

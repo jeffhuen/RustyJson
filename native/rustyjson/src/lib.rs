@@ -175,11 +175,9 @@ fn encode_direct_impl<'a>(
 /// Shared decode implementation used by both normal and dirty scheduler NIFs
 fn decode_impl<'a>(
     env: Env<'a>,
-    input: rustler::Binary,
+    input: rustler::Binary<'a>,
     opts_map: Term<'a>,
 ) -> Result<Term<'a>, Error> {
-    let slice = input.as_slice();
-
     // Parse options from Elixir map
     let decode_opts = direct_decode::DecodeOptions {
         intern_keys: get_opt_bool(env, opts_map, atoms::intern_keys(), false),
@@ -191,7 +189,7 @@ fn decode_impl<'a>(
         validate_strings: get_opt_bool(env, opts_map, atoms::validate_strings(), true),
     };
 
-    direct_decode::json_to_term(env, slice, decode_opts).map_err(|e| Error::RaiseTerm(Box::new(e)))
+    direct_decode::json_to_term(env, &input, decode_opts).map_err(|e| Error::RaiseTerm(Box::new(e)))
 }
 
 /// Direct encode on normal scheduler
@@ -216,7 +214,11 @@ fn encode_direct_dirty<'a>(
 
 /// Direct decode on normal scheduler
 #[rustler::nif(name = "nif_decode")]
-fn decode<'a>(env: Env<'a>, input: rustler::Binary, opts_map: Term<'a>) -> Result<Term<'a>, Error> {
+fn decode<'a>(
+    env: Env<'a>,
+    input: rustler::Binary<'a>,
+    opts_map: Term<'a>,
+) -> Result<Term<'a>, Error> {
     decode_impl(env, input, opts_map)
 }
 
@@ -224,7 +226,7 @@ fn decode<'a>(env: Env<'a>, input: rustler::Binary, opts_map: Term<'a>) -> Resul
 #[rustler::nif(name = "nif_decode_dirty", schedule = "DirtyCpu")]
 fn decode_dirty<'a>(
     env: Env<'a>,
-    input: rustler::Binary,
+    input: rustler::Binary<'a>,
     opts_map: Term<'a>,
 ) -> Result<Term<'a>, Error> {
     decode_impl(env, input, opts_map)

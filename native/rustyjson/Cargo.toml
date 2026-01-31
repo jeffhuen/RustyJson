@@ -1,6 +1,6 @@
 [package]
 name = "rustyjson"
-version = "0.3.3"
+version = "0.3.4"
 authors = ["Jeff Huen"]
 edition = "2021"
 

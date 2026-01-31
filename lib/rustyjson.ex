@@ -272,6 +272,48 @@ defmodule RustyJson do
                                  1024
                                )
 
+  # ============================================================================
+  # Decode fast-path defaults
+  # ============================================================================
+  #
+  # When `decode!/1` is called with no options on a binary input (the common
+  # case — Phoenix, Plug.Parsers, and most application code), we skip all
+  # option parsing and pass this precomputed map directly to the NIF.
+  #
+  # ## Invariant
+  #
+  # This map MUST be identical to what `parse_decode_opts([])` produces as
+  # its `nif_opts` return value. If you add, remove, or rename a decode
+  # option, or change its default, you MUST update this map to match.
+  #
+  # The correspondence is:
+  #
+  #   | Key in @default_decode_nif_opts | Default option value          | Derived from                         |
+  #   |---------------------------------|-------------------------------|--------------------------------------|
+  #   | `:intern_keys`                  | `false`                       | `keys: :strings` (not `:intern`)     |
+  #   | `:floats_decimals`              | `false`                       | `floats: :native` (not `:decimals`)  |
+  #   | `:ordered_objects`              | `false`                       | `objects: :maps` (not `:ordered_objects`) |
+  #   | `:integer_digit_limit`          | `@default_integer_digit_limit`| `decoding_integer_digit_limit:` default |
+  #   | `:max_bytes`                    | `0`                           | `max_bytes: 0` (unlimited)           |
+  #   | `:reject_duplicate_keys`        | `false`                       | `duplicate_keys: :last` (not `:error`) |
+  #   | `:validate_strings`             | `true`                        | `validate_strings: true`             |
+  #
+  # The fast path also assumes:
+  #   - `keys` is `:strings` (no post-NIF key transformation needed)
+  #   - `dirty_threshold` is `@default_dirty_threshold_bytes`
+  #   - `max_bytes` is `0` (no pre-decode size check needed)
+  #   - Input is already a binary (no `IO.iodata_to_binary` needed)
+  #
+  @default_decode_nif_opts %{
+    intern_keys: false,
+    floats_decimals: false,
+    ordered_objects: false,
+    integer_digit_limit: @default_integer_digit_limit,
+    max_bytes: 0,
+    reject_duplicate_keys: false,
+    validate_strings: true
+  }
+
   source_url = Mix.Project.config()[:source_url]
   version = Mix.Project.config()[:version]
 
@@ -696,7 +738,42 @@ defmodule RustyJson do
 
   """
   @spec decode!(iodata(), [decode_opt()]) :: term()
-  def decode!(input, opts \\ []) do
+
+  # Fast path: no options, binary input.
+  #
+  # This clause handles the common case where decode! is called with no options
+  # on a binary input — the pattern used by Phoenix.Socket.V2.JSONSerializer,
+  # Plug.Parsers, and most application code.
+  #
+  # It skips all option parsing (9x Keyword.pop), validation, IO.iodata_to_binary,
+  # and max_bytes checks, passing a precomputed @default_decode_nif_opts map
+  # directly to the NIF. This eliminates ~280ns of per-call overhead.
+  #
+  # The dirty scheduler threshold is still checked: inputs >= 100KB (default)
+  # are dispatched to a dirty scheduler to avoid blocking normal BEAM schedulers.
+  #
+  # Behavior is identical to `decode!(input, [])` — this is purely an
+  # internal optimization. See @default_decode_nif_opts for the invariant
+  # that must be maintained.
+  def decode!(input, opts \\ [])
+
+  def decode!(input, []) when is_binary(input) do
+    if byte_size(input) >= @default_dirty_threshold_bytes do
+      nif_decode_dirty(input, @default_decode_nif_opts)
+    else
+      nif_decode(input, @default_decode_nif_opts)
+    end
+  rescue
+    e in [ErlangError] ->
+      raise_decode_error(e, input)
+  end
+
+  # Full path: options provided, or iodata input.
+  #
+  # Parses all options, validates them, converts iodata to binary if needed,
+  # and applies post-decode key transformations. This path handles all
+  # decode options including keys: :atoms, floats: :decimals, max_bytes, etc.
+  def decode!(input, opts) do
     {keys, nif_opts, validated_opts} = parse_decode_opts(opts)
 
     max_bytes = Map.get(nif_opts, :max_bytes, 0)

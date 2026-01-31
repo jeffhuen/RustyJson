@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-01-30
+
+### Performance
+
+- **Decode fast path** — `decode!/1` bypasses option parsing for the common no-options call (Phoenix, Plug, etc.). No API changes.
+- **SIMD string scanning** — String parsing uses AVX2 (32 bytes/iter, x86_64 Haswell+), SSE2 (16 bytes/iter, all x86_64), or NEON (16 bytes/iter, aarch64) with runtime detection. Combined with zero-copy sub-binary references for non-escaped strings. In local benchmarks, 2-4x faster on string-heavy payloads vs v0.3.3, 15-30% faster on small payloads. Results may vary by hardware and payload shape.
+
 ## [0.3.3] - 2026-01-30
 
 ### Performance
@@ -296,6 +303,7 @@ No regressions. Relative speedup vs Jason is unchanged from v0.2.0.
 - Zero-copy string handling in decoder for unescaped strings
 - 256-byte lookup table for O(1) escape detection
 
+[0.3.4]: https://github.com/jeffhuen/rustyjson/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/jeffhuen/rustyjson/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/jeffhuen/rustyjson/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/jeffhuen/rustyjson/compare/v0.3.0...v0.3.1
