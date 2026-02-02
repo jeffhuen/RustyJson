@@ -85,6 +85,12 @@ impl StructuralIndex {
 ///
 /// Uses SIMD to classify chunks and a scalar state machine to track
 /// in-string state and escape sequences.
+///
+/// NOTE: This three-loop structure (AVX2 32-byte / 16-byte / scalar tail)
+/// with a bool `chunk_has_structural` check is intentionally simple.
+/// A "dual-mode" approach (SIMD-skip non-structural chunks, SIMD-skip
+/// in-string bytes) was benchmarked and regressed ~200% — see optimization
+/// history in simd_utils.rs for details. Do not refactor into skip functions.
 fn build_structural_index(input: &[u8]) -> StructuralIndex {
     // Pre-allocate at ~10% of input size (typical structural density)
     let estimated = input.len() / 10;
@@ -171,7 +177,7 @@ fn build_structural_index(input: &[u8]) -> StructuralIndex {
         }
     }
 
-    // Scalar tail for remaining bytes (all architectures)
+    // Scalar tail for remaining bytes
     while pos < input.len() {
         let b = input[pos];
         if prev_escape {
@@ -392,16 +398,10 @@ impl<'a, 'b> DirectParser<'a, 'b> {
 
     #[inline(always)]
     fn skip_whitespace(&mut self) {
-        // SIMD fast path: skip 16 bytes of whitespace at a time
-        while self.pos + crate::simd_utils::CHUNK <= self.input.len() {
-            if crate::simd_utils::chunk_all_whitespace(self.input, self.pos) {
-                self.pos += crate::simd_utils::CHUNK;
-            } else {
-                break;
-            }
-        }
+        // SIMD fast path: skip whitespace in 16/32-byte chunks, with partial chunk handling
+        crate::simd_utils::skip_whitespace(self.input, &mut self.pos);
 
-        // Scalar tail
+        // Scalar tail for remaining < 16 bytes
         while self.pos < self.input.len() {
             match self.input[self.pos] {
                 b' ' | b'\t' | b'\n' | b'\r' => self.pos += 1,
@@ -778,8 +778,20 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                 }
                 i += 1;
             } else {
-                result.push(self.input[i]);
-                i += 1;
+                // Bulk copy: SIMD scan to next escape-worthy byte, copy safe region in one shot.
+                // input[start..end] excludes quotes (parser validated boundaries), so
+                // find_escape_json only stops on `\` or control chars (both need handling).
+                let next = crate::simd_utils::find_escape_json(self.input, i).min(end);
+                if next > i {
+                    result.extend_from_slice(&self.input[i..next]);
+                    i = next;
+                } else {
+                    // Sitting on a control char or other non-backslash escapable byte.
+                    // Push it and advance to avoid infinite loop; the outer loop or
+                    // caller will handle validation.
+                    result.push(self.input[i]);
+                    i += 1;
+                }
             }
         }
         Ok(result)
@@ -802,8 +814,9 @@ impl<'a, 'b> DirectParser<'a, 'b> {
             pos += 1;
         }
 
-        // Scan digits directly (no peek/advance per byte)
+        // Scan digits directly (SIMD bulk skip + scalar tail)
         let digit_start = pos;
+        crate::simd_utils::skip_ascii_digits(bytes, &mut pos);
         while pos < bytes.len() && bytes[pos].is_ascii_digit() {
             pos += 1;
         }
@@ -886,6 +899,7 @@ impl<'a, 'b> DirectParser<'a, 'b> {
             b'0' => pos += 1,
             b'1'..=b'9' => {
                 pos += 1;
+                crate::simd_utils::skip_ascii_digits(bytes, &mut pos);
                 while pos < len && bytes[pos].is_ascii_digit() {
                     pos += 1;
                 }
@@ -910,6 +924,7 @@ impl<'a, 'b> DirectParser<'a, 'b> {
             if pos >= len || !bytes[pos].is_ascii_digit() {
                 return Err((Cow::Borrowed("Invalid number"), start));
             }
+            crate::simd_utils::skip_ascii_digits(bytes, &mut pos);
             while pos < len && bytes[pos].is_ascii_digit() {
                 pos += 1;
             }
@@ -925,6 +940,7 @@ impl<'a, 'b> DirectParser<'a, 'b> {
             if pos >= len || !bytes[pos].is_ascii_digit() {
                 return Err((Cow::Borrowed("Invalid number"), start));
             }
+            crate::simd_utils::skip_ascii_digits(bytes, &mut pos);
             while pos < len && bytes[pos].is_ascii_digit() {
                 pos += 1;
             }
@@ -1688,6 +1704,7 @@ pub mod bench_helpers {
                 b'0' => pos += 1,
                 b'1'..=b'9' => {
                     pos += 1;
+                    crate::simd_utils::skip_ascii_digits(input, &mut pos);
                     while pos < input.len() && input[pos].is_ascii_digit() {
                         pos += 1;
                     }
@@ -1703,6 +1720,7 @@ pub mod bench_helpers {
             if pos >= input.len() || !input[pos].is_ascii_digit() {
                 return (pos, is_float);
             }
+            crate::simd_utils::skip_ascii_digits(input, &mut pos);
             while pos < input.len() && input[pos].is_ascii_digit() {
                 pos += 1;
             }
@@ -1715,6 +1733,7 @@ pub mod bench_helpers {
             if pos < input.len() && (input[pos] == b'+' || input[pos] == b'-') {
                 pos += 1;
             }
+            crate::simd_utils::skip_ascii_digits(input, &mut pos);
             while pos < input.len() && input[pos].is_ascii_digit() {
                 pos += 1;
             }

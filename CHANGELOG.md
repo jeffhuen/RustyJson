@@ -5,7 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.5] - 2026-01-31
+## [0.3.5] - 2026-02-01
+
+Major backend refactor: the Rust core was rewritten for safety, stability, and performance. All architecture-specific SIMD intrinsics replaced with portable `std::simd`, eliminating all `unsafe` code. No API breaking changes — the Elixir interface is fully backwards-compatible with 0.3.4.
 
 ### Added
 
@@ -14,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Portable SIMD (`std::simd`)** — Replaced all architecture-specific SIMD intrinsics (NEON, AVX2, SSE2) with Rust's portable SIMD. One codepath per pattern, zero `unsafe`, no `#[cfg(target_arch)]` branching. The compiler generates optimal instructions for each target automatically. Only uses `std::simd` APIs on the stabilization track (comparisons, masks, splat/from_slice); blocked APIs (`simd_swizzle!`, `scatter/gather`, etc.) are explicitly avoided.
+- **Portable SIMD (`std::simd`)** — Replaced all architecture-specific SIMD intrinsics (NEON, AVX2, SSE2) with Rust's portable SIMD. One codepath per pattern, zero `unsafe`, no `#[cfg(target_arch)]` branching. The compiler generates optimal instructions for each target automatically. Only uses `std::simd` APIs with stable semantics (comparisons, masks, splat/from_slice) — the [critical stabilization blockers](https://github.com/rust-lang/portable-simd/issues/364) (swizzle, scatter/gather, mask element types) are unrelated to our usage and explicitly avoided.
 - **Zero `unsafe` code** — Eliminated all `unsafe` blocks. SIMD is now safe via `std::simd`, and `make_subbinary_unchecked` was replaced with the safe `make_subbinary`. The entire codebase is 100% safe Rust.
 - **Nightly Rust toolchain** — Required for `#![feature(portable_simd)]`. Pinned via `rust-toolchain.toml`.
 
@@ -25,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Direct NIF binary writes** — Encoded JSON is written once directly into BEAM-managed memory, eliminating intermediate buffer copies.
 - **Fast-path integer parsing** — Homogeneous integer arrays use a tighter, branchless loop that bypasses general-purpose parsing for small numbers.
 - **Allocation reduction** — Switched to `SmallVec` for formatting context, interned struct field atoms, and pre-allocated URI buffers to minimize heap pressure.
+- **SIMD digit scanning** — Number parsing skips contiguous digit runs in 16/32-byte chunks with partial-chunk handling via `to_bitmask().trailing_zeros()`. Applied across all digit-scanning sites in `parse_number`, `parse_number_fast`, and `scan_number`.
+- **Bulk escaped string copy** — `decode_escaped_string` uses SIMD `find_escape_json` to locate the next escape-worthy byte, then copies the entire safe region in one `memcpy` via `extend_from_slice`.
+- **Precise SIMD exit positions** — `skip_whitespace` and `skip_ascii_digits` use `to_bitmask().trailing_zeros()` to advance to the exact byte position within a partial chunk, eliminating redundant scalar fallback. (String scanning and structural indexing retain the simpler `.any()` + `break` pattern, which benchmarks faster for their typical workloads of frequent hits and dense JSON.)
 - **Static error messages** — Replaced dynamic string allocation with static `Cow` types for common parsing errors.
 
 ### Fixed

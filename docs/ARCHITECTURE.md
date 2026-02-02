@@ -118,13 +118,16 @@ There is **no `unsafe` code** in RustyJson. No raw SIMD intrinsics, no `std::arc
 
 **`std::simd` API discipline:**
 
-We only use APIs that are on the stabilization track:
+The `portable_simd` feature gate is unstable, but not all APIs behind it are equally risky. The [critical stabilization blockers](https://github.com/rust-lang/portable-simd/issues/364) are swizzle (blocked on const generics), mask element types, and lane count bounds — none of which we use. RustyJson only relies on the uncontroversial subset that has no open design questions:
+
 - `Simd::from_slice`, `Simd::splat` — vector construction
 - `simd_eq`, `simd_lt`, `simd_ge` — comparison operators
 - `Mask::any`, `Mask::all`, `Mask::to_bitmask` — mask operations
 - `Mask` bitwise ops (`|`, `&`, `!`) — combining conditions
 
-We explicitly avoid blocked-from-stabilization APIs: `simd_swizzle!`, `Simd::scatter/gather`, `Simd::interleave/deinterleave`, `SimdFloat::to_int_unchecked`, `Simd::resize`, and `Simd::rotate_elements_left/right`. These are documented in `simd_utils.rs` as a DO NOT USE list.
+These APIs have stable semantics today. If `portable_simd` is split into independently-stabilizable feature gates (as discussed in the tracking issue), the subset we use would be first in line.
+
+We explicitly avoid APIs blocked from stabilization: `simd_swizzle!`, `Simd::scatter/gather`, `Simd::interleave/deinterleave`, `SimdFloat::to_int_unchecked`, `Simd::resize`, and `Simd::rotate_elements_left/right`. These are documented in `simd_utils.rs` as a DO NOT USE list.
 
 **SIMD scanning patterns** (all in `simd_utils.rs`):
 1. **String scanning**: Skip past plain string bytes (no `"`, `\`, or control chars)

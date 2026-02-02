@@ -23,7 +23,7 @@ def deps do
 end
 ```
 
-Pre-built binaries are provided via [Rustler Precompiled](https://github.com/philss/rustler_precompiled). To build from source, set `FORCE_RUSTYJSON_BUILD=true`.
+Pre-built binaries are provided via [Rustler Precompiled](https://github.com/philss/rustler_precompiled) for 10 targets across 3 NIF versions. On x86_64, an AVX2-optimized variant is automatically selected at compile time when the host CPU supports it. To build from source, set `FORCE_RUSTYJSON_BUILD=true`.
 
 ## Drop-in Jason Replacement
 
@@ -172,6 +172,7 @@ These types are handled natively in Rust without protocol overhead:
 - `compress: :gzip | {:gzip, 0..9}` - Gzip compression
 - `lean: true` - Skip special type handling for max speed
 - `protocol: true` - Enable custom `RustyJson.Encoder` protocol
+- `sort_keys: true` - Sort map keys lexicographically (useful for snapshot tests, caching, diffing)
 
 **Decoding:**
 - `keys: :strings | :atoms | :atoms! | :intern` - Key handling
@@ -183,12 +184,12 @@ For custom types, implement the `RustyJson.Encoder` protocol and use `protocol: 
 
 ```elixir
 defimpl RustyJson.Encoder, for: Money do
-  def encode(%Money{amount: amount, currency: currency}) do
-    %{amount: Decimal.to_string(amount), currency: currency}
+  def encode(%Money{amount: amount, currency: currency}, _opts) do
+    RustyJson.Encode.map(%{amount: Decimal.to_string(amount), currency: currency}, _opts)
   end
 end
 
-RustyJson.encode!(money, protocol: true)
+RustyJson.encode!(money)
 ```
 
 Or use `@derive`:
@@ -252,13 +253,21 @@ RustyJson eliminates the middle step by walking the Erlang term tree directly an
 - Walks Erlang terms directly via Rustler's term API
 - Writes to a single buffer without intermediate allocations
 - Uses [itoa](https://github.com/dtolnay/itoa) and [ryu](https://github.com/dtolnay/ryu) for fast number formatting
+- SIMD-accelerated escape scanning (16 bytes/iter, 32 bytes/iter on AVX2)
 - 256-byte lookup table for O(1) escape detection
 
 **Custom Direct Decoder:**
 - Parses JSON while building Erlang terms (no intermediate AST)
+- SIMD-accelerated string scanning, whitespace skipping, and structural character indexing
 - Zero-copy strings for unescaped content
 - Single-entry fast path for objects and arrays (avoids heap allocation for deeply nested JSON)
 - [lexical-core](https://github.com/Alexhuszagh/rust-lexical) for fast number parsing
+
+**Portable SIMD:**
+- All SIMD uses Rust's `std::simd` (portable SIMD) — one codepath per pattern, zero `unsafe`, no `#[cfg(target_arch)]` branching
+- The compiler generates optimal instructions for each target: SSE2 on x86_64, NEON on aarch64, scalar on others
+- AVX2 precompiled variants use 32-byte wide paths for additional throughput on Haswell+ CPUs
+- Only uses APIs with stable semantics (`Simd::splat/from_slice`, comparisons, `Mask` ops) — the [stabilization blockers](https://github.com/rust-lang/portable-simd/issues/364) (swizzle, scatter/gather, mask element types) are explicitly avoided
 
 **Memory Allocator:**
 Uses [mimalloc](https://github.com/microsoft/mimalloc) by default. Alternatives available via Cargo features:
@@ -278,11 +287,16 @@ The wins come from:
 2. **No intermediate allocations** - No Rust structs, no AST
 3. **Good memory allocator** - mimalloc reduces fragmentation
 
+## Safety
+
+RustyJson contains **zero `unsafe` code**. All SIMD operations use Rust's portable `std::simd` (safe abstractions), and all NIF binary operations use Rustler's safe API. Memory safety is guaranteed at compile time by the Rust type system.
+
 ## Limitations
 
 - Maximum nesting depth: 128 levels (per RFC 7159)
 - Decoding very large payloads (>500 KB) may be only marginally faster than Jason
 - Benchmarks are on Apple Silicon M1; results on other architectures may differ
+- Requires nightly Rust toolchain (for `#![feature(portable_simd)]`)
 
 ## Acknowledgments
 
