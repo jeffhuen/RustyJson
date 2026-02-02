@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`sort_keys` encode option** — `sort_keys: true` sorts map keys lexicographically in the JSON output. Useful for snapshot tests, caching, and diffing. Sorting is recursive (nested maps are also sorted). Default: `false` — JSON objects are unordered per RFC 8259, and RustyJson preserves this semantics by default. No overhead when disabled.
-- **AVX2 precompiled binary variants** — Each x86_64 target now ships two precompiled binaries: a baseline (SSE2, 16-byte SIMD) and an AVX2 variant optimized for Haswell+ CPUs (32-byte SIMD, built with `-C target-cpu=x86-64-v3`). At compile time, `RustlerPrecompiled` detects AVX2 support on the host CPU and downloads the optimal variant automatically. Total precompiled artifacts: 42 (30 baseline + 12 AVX2 variants across 4 x86_64 targets × 3 NIF versions). The musl target is excluded from AVX2 variants due to cross-compilation limitations.
+- **AVX2 precompiled binary variants** — Each x86_64 target now ships two precompiled binaries: a baseline (SSE2, 16-byte SIMD) and an AVX2 variant optimized for Haswell+ CPUs (32-byte SIMD, built with `-C target-cpu=x86-64-v3`). At compile time, `RustlerPrecompiled` detects AVX2 support on the host CPU and downloads the optimal variant automatically. Total precompiled artifacts: 45 (30 baseline + 15 AVX2 variants across 5 x86_64 targets × 3 NIF versions).
 
 ### Changed
 
