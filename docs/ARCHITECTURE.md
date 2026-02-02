@@ -79,11 +79,9 @@ The difference comes from iolist-based encoding creating many intermediate alloc
 
 A common concern with NIFs is: "What if it crashes and takes down my entire BEAM VM?"
 
-This is a valid concern for C-based NIFs, where a single buffer overflow, null pointer dereference, or use-after-free can crash the VM. However, **RustyJson's architecture makes this effectively impossible**.
+This is a valid concern for C-based NIFs, where a single buffer overflow, null pointer dereference, or use-after-free can crash the VM. However, **RustyJson contains zero `unsafe` code** — not minimized, not audited, literally zero — making VM crashes from our code effectively impossible.
 
-### Why RustyJson Cannot Crash the VM
-
-#### 1. Rust's Compile-Time Memory Safety
+### 1. Rust's Compile-Time Memory Safety
 
 Rust eliminates entire categories of bugs at compile time:
 
@@ -100,58 +98,69 @@ These aren't runtime checks that could be bypassed—the Rust compiler literally
 
 #### 2. Rustler's Safety Layer
 
-[Rustler](https://github.com/rusterlium/rustler) adds BEAM-specific protections:
+[Rustler](https://github.com/rusterlium/rustler) adds BEAM-specific protections on top of Rust's compile-time guarantees:
 
-- **Panic catching**: Rust panics are caught via `std::panic::catch_unwind` and converted to Elixir exceptions. A panic cannot crash the VM.
-- **Term safety**: All Erlang term manipulation goes through safe APIs that validate types.
-- **No raw pointers**: Rustler's `Term` type wraps raw BEAM pointers safely.
-- **Lifetime enforcement**: Rust's borrow checker ensures terms aren't used after their scope ends.
+- **Panic catching**: Rustler wraps every NIF call in `std::panic::catch_unwind`. If any Rust code panics (e.g., an unexpected `unwrap()` failure), the panic is caught at the FFI boundary and converted to an Elixir exception. This is critical because an uncaught Rust panic unwinding across the C FFI boundary into the BEAM would be undefined behavior. With Rustler, a panic cannot crash the VM — it becomes a normal Elixir error.
+- **Term safety**: All Erlang term manipulation goes through safe APIs that validate types. You cannot accidentally create an invalid term or corrupt the BEAM heap.
+- **No raw pointers**: Rustler's `Term` type wraps raw BEAM pointers safely. Direct pointer arithmetic is never exposed to NIF authors.
+- **Lifetime enforcement**: Rust's borrow checker ensures terms aren't used after their owning `Env` scope ends. This prevents use-after-free bugs that plague C-based NIFs.
+- **Resource objects**: Rustler manages Rust structs passed to Erlang via reference-counted resource objects. The struct is automatically dropped when no longer referenced — no manual cleanup, no leaks.
 
-#### 3. Zero `unsafe` Code in Our Codebase
+#### 3. Zero `unsafe` — Portable SIMD via `std::simd`
 
-**RustyJson's source code contains zero `unsafe` blocks.** Not minimized, not
-audited—literally zero. Every line of Rust we wrote is 100% safe Rust.
+RustyJson uses Rust's `std::simd` (portable SIMD) for all vectorized operations. This is a safe abstraction over hardware SIMD — the compiler generates optimal instructions for each target automatically:
 
-```rust
-// All our code uses safe patterns like this:
-fn peek(&self) -> Option<u8> {
-    self.input.get(self.pos).copied()  // Safe: returns None if out of bounds
-}
+- **x86_64**: SSE2 (16-byte chunks), AVX2 (32-byte chunks) when the compile target supports it
+- **aarch64**: NEON (16-byte chunks)
+- **Other targets**: Scalar fallback emitted by the compiler
 
-fn skip_whitespace(&mut self) {
-    while let Some(&byte) = self.input.get(self.pos) {  // Safe: bounds-checked
-        match byte {
-            b' ' | b'\t' | b'\n' | b'\r' => self.pos += 1,
-            _ => break,
-        }
-    }
-}
-```
+There is **no `unsafe` code** in RustyJson. No raw SIMD intrinsics, no `std::arch::*` imports, no runtime feature detection, no `#[cfg(target_arch)]` branching. One codepath per pattern, portable across all targets.
+
+**`std::simd` API discipline:**
+
+We only use APIs that are on the stabilization track:
+- `Simd::from_slice`, `Simd::splat` — vector construction
+- `simd_eq`, `simd_lt`, `simd_ge` — comparison operators
+- `Mask::any`, `Mask::all`, `Mask::to_bitmask` — mask operations
+- `Mask` bitwise ops (`|`, `&`, `!`) — combining conditions
+
+We explicitly avoid blocked-from-stabilization APIs: `simd_swizzle!`, `Simd::scatter/gather`, `Simd::interleave/deinterleave`, `SimdFloat::to_int_unchecked`, `Simd::resize`, and `Simd::rotate_elements_left/right`. These are documented in `simd_utils.rs` as a DO NOT USE list.
+
+**SIMD scanning patterns** (all in `simd_utils.rs`):
+1. **String scanning**: Skip past plain string bytes (no `"`, `\`, or control chars)
+2. **Structural detection**: Find JSON structural characters (`{}[],:"\`)
+3. **Whitespace skipping**: Skip contiguous whitespace chunks
+4. **Escape finding**: Locate the first byte needing JSON/HTML/Unicode/JavaScript escaping
+
+Each function processes 32-byte wide chunks on AVX2 targets, then 16-byte chunks, with a scalar tail for remaining bytes.
 
 **Our source files:**
 
-| File | Purpose | Lines | Unsafe |
-|------|---------|-------|--------|
-| `lib.rs` | NIF entry point | ~85 | **0** |
-| `direct_json.rs` | JSON encoder | ~1,050 | **0** |
-| `direct_decode.rs` | JSON decoder | ~550 | **0** |
-| `compression.rs` | Gzip compression | ~70 | **0** |
-| `decimal.rs` | Decimal handling | ~95 | **0** |
-| **Total** | | **~1,850** | **0** |
+| File | Purpose | `unsafe` |
+|------|---------|----------|
+| `lib.rs` | NIF entry point, feature flags | None |
+| `simd_utils.rs` | Portable SIMD scanning (all patterns) | None |
+| `direct_json.rs` | JSON encoder | None |
+| `direct_decode.rs` | JSON decoder | None |
+| `nif_binary_writer.rs` | Growable NIF binary | None |
+| `compression.rs` | Gzip compression | None |
+| `decimal.rs` | Decimal handling | None |
+| **Total** | | **None** |
 
 **Design choices that eliminate unsafe:**
 
-1. **`&str` over `&[u8]`** - UTF-8 validity guaranteed at compile time
-2. **`.get()` over indexing** - Returns `Option` instead of panicking
-3. **`while let Some()`** - Idiomatic safe iteration pattern
+1. **`&str` over `&[u8]`** — UTF-8 validity guaranteed at compile time
+2. **`.get()` over indexing** — Returns `Option` instead of panicking
+3. **`while let Some()`** — Idiomatic safe iteration pattern
+4. **`std::simd` over `std::arch`** — Portable SIMD with no `unsafe` blocks
 
 **Where `unsafe` does exist (dependencies only):**
 
 | Dependency | Purpose | Trust Level |
 |------------|---------|-------------|
-| Rustler | NIF ↔ BEAM bridge | High - 10+ years, 500+ projects |
-| mimalloc | Memory allocator | High - Microsoft, battle-tested |
-| Rust stdlib | Core functionality | Highest - Rust core team |
+| Rustler | NIF ↔ BEAM bridge | High — 10+ years, 500+ projects |
+| mimalloc | Memory allocator | High — Microsoft, battle-tested |
+| Rust stdlib | Core functionality | Highest — Rust core team |
 
 Any memory safety bug would have to originate in a dependency, not in RustyJson code.
 
@@ -167,6 +176,13 @@ We enforce limits that prevent resource exhaustion:
 | Input size | Configurable (`max_bytes`) | Prevents memory exhaustion from oversized payloads |
 | Allocation | System memory | Same as pure Elixir |
 
+#### 5. Continuous Fuzzing
+
+We use [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) (libFuzzer + AddressSanitizer) to test
+boundary correctness. Six fuzz targets cover string scanning, structural index building, whitespace skipping,
+number parsing, escape decoding, and encode-side escape scanning. Seed corpora include synthetic inputs at
+SIMD chunk boundaries (8/16/32 bytes) and the full JSONTestSuite.
+
 ### What Would Actually Need to Go Wrong?
 
 For RustyJson to crash the VM, one of these would need to happen:
@@ -176,18 +192,8 @@ For RustyJson to crash the VM, one of these would need to happen:
 | Bug in Rustler | Extremely low | Mature library, used in production by many projects |
 | Bug in Rust compiler | Essentially zero | Rust compiler is formally verified for memory safety |
 | Bug in mimalloc | Extremely low | Microsoft's allocator, battle-tested |
-| Cosmic ray bit flip | Non-zero but... | Not a software problem |
 
-None of these are RustyJson bugs—they're infrastructure bugs that would affect any Rust-based system.
-
-### Comparison: Theoretical vs Practical Risk
-
-| Aspect | Theoretical Risk | Practical Risk |
-|--------|------------------|----------------|
-| Memory corruption | "NIFs can crash" | Rust prevents at compile time |
-| Stack overflow | "Deep recursion" | 128-depth limit enforced |
-| Panic/exception | "Unhandled errors" | Rustler converts to Elixir errors |
-| Scheduler blocking | "Long NIF calls" | JSON encoding is fast, bounded |
+None of these are RustyJson bugs — they're infrastructure bugs that would affect any Rust-based system.
 
 ### Our Position
 
@@ -195,13 +201,11 @@ We consider RustyJson **as safe as pure Elixir code** for the following reasons:
 
 1. **Safe Rust is memory-safe by construction**. The compiler guarantees it.
 
-2. **Rustler has been production-tested** across hundreds of Elixir projects for years.
+2. **Rustler catches panics at the FFI boundary** via `catch_unwind`, converting them to Elixir exceptions. A Rust panic cannot crash the BEAM VM.
 
-3. **We use no `unsafe` code** in our encoding/decoding logic.
+3. **Zero `unsafe` code**. The entire codebase — including SIMD — is safe Rust. Portable SIMD via `std::simd` lets the compiler generate optimal vector instructions without requiring `unsafe` blocks.
 
-4. **Panics become exceptions**, not crashes.
-
-5. **Resource limits are enforced** (depth, recursion).
+4. **Resource limits are enforced** (depth, recursion, intern cache cap).
 
 The "NIFs can crash your VM" warning applies to **C-based NIFs** where a single bug can corrupt memory. It does not meaningfully apply to safe Rust NIFs, which have the same memory safety guarantees as the BEAM itself.
 
@@ -682,7 +686,7 @@ See [BENCHMARKS.md](BENCHMARKS.md#key-interning-benchmarks) for detailed results
 
 2. **True iolist output**: The complexity isn't justified by real-world benefits.
 
-3. **Unsafe Rust**: Memory safety is non-negotiable.
+3. **`unsafe` Rust**: The codebase is entirely safe Rust, including SIMD. We intend to keep it that way.
 
 4. **Custom allocators per-call**: mimalloc is fast enough globally.
 

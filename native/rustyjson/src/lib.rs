@@ -1,21 +1,33 @@
+#![feature(portable_simd)]
+
 use rustler::{Env, Error, Term};
 
-#[cfg(feature = "mimalloc")]
+#[cfg(all(feature = "mimalloc", not(fuzzing)))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-#[cfg(feature = "jemalloc")]
+#[cfg(all(feature = "jemalloc", not(fuzzing)))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-#[cfg(feature = "snmalloc")]
+#[cfg(all(feature = "snmalloc", not(fuzzing)))]
 #[global_allocator]
 static GLOBAL: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
 
 mod compression;
 mod decimal;
+mod nif_binary_writer;
+mod simd_utils;
+
+#[cfg(not(feature = "bench"))]
 mod direct_decode;
+#[cfg(feature = "bench")]
+pub mod direct_decode;
+
+#[cfg(not(feature = "bench"))]
 mod direct_json;
+#[cfg(feature = "bench")]
+pub mod direct_json;
 
 mod atoms {
     rustler::atoms! {
@@ -28,6 +40,7 @@ mod atoms {
         lean,
         escape,
         strict_keys,
+        sort_keys,
         pretty_opts,
         line_separator,
         after_colon,
@@ -47,11 +60,23 @@ mod atoms {
         coef,
         exp,
         values,
+        // Struct field atoms for encode (Date, Time, DateTime, URI, Range, MapSet)
+        year, month, day,
+        hour, minute, second, microsecond,
+        std_offset, utc_offset,
+        scheme, userinfo, host, port, path, query, fragment,
+        calendar, map, first, last, step,
     }
 }
 
+#[cfg(not(fuzzing))]
 rustler::init!("Elixir.RustyJson");
 
+// ============================================================================
+// NIF infrastructure — excluded when building for fuzz targets
+// ============================================================================
+
+#[cfg(not(fuzzing))]
 /// Extract a typed value from an Elixir map by atom key, returning default if missing.
 #[inline]
 fn get_opt<'a, T: rustler::Decoder<'a>>(
@@ -66,6 +91,7 @@ fn get_opt<'a, T: rustler::Decoder<'a>>(
         .unwrap_or(default)
 }
 
+#[cfg(not(fuzzing))]
 /// Convenience wrapper for boolean opts.
 #[inline]
 fn get_opt_bool<'a>(
@@ -77,6 +103,7 @@ fn get_opt_bool<'a>(
     get_opt(env, map, key, default)
 }
 
+#[cfg(not(fuzzing))]
 /// Shared encode implementation used by both normal and dirty scheduler NIFs
 fn encode_direct_impl<'a>(
     env: Env<'a>,
@@ -89,6 +116,7 @@ fn encode_direct_impl<'a>(
         get_opt(env, opts_map, atoms::compression(), None);
     let lean: bool = get_opt_bool(env, opts_map, atoms::lean(), false);
     let strict_keys: bool = get_opt_bool(env, opts_map, atoms::strict_keys(), false);
+    let sort_keys: bool = get_opt_bool(env, opts_map, atoms::sort_keys(), false);
 
     let escape_term = opts_map
         .map_get(atoms::escape().to_term(env))
@@ -102,6 +130,7 @@ fn encode_direct_impl<'a>(
     // Build shared context with heap-allocated separators
     let mut ctx = direct_json::FormatContext {
         strict_keys,
+        sort_keys,
         ..Default::default()
     };
 
@@ -109,17 +138,17 @@ fn encode_direct_impl<'a>(
     if pretty_opts_term.get_type() == rustler::TermType::Map {
         if let Ok(val) = pretty_opts_term.map_get(atoms::line_separator().to_term(env)) {
             if let Ok(binary) = val.decode::<rustler::Binary>() {
-                ctx.line_separator = binary.as_slice().to_vec();
+                ctx.line_separator = smallvec::SmallVec::from_slice(binary.as_slice());
             }
         }
         if let Ok(val) = pretty_opts_term.map_get(atoms::after_colon().to_term(env)) {
             if let Ok(binary) = val.decode::<rustler::Binary>() {
-                ctx.after_colon = binary.as_slice().to_vec();
+                ctx.after_colon = smallvec::SmallVec::from_slice(binary.as_slice());
             }
         }
         if let Ok(val) = pretty_opts_term.map_get(atoms::indent().to_term(env)) {
             if let Ok(binary) = val.decode::<rustler::Binary>() {
-                ctx.indent = binary.as_slice().to_vec();
+                ctx.indent = smallvec::SmallVec::from_slice(binary.as_slice());
             }
         }
     }
@@ -133,7 +162,7 @@ fn encode_direct_impl<'a>(
                     .map_get(atoms::indent().to_term(env))
                     .is_ok();
             if !has_custom_indent {
-                ctx.indent = vec![b' '; n as usize];
+                ctx.indent = smallvec::smallvec![b' '; n as usize];
             }
         }
     }
@@ -162,16 +191,15 @@ fn encode_direct_impl<'a>(
         bin.as_mut_slice().copy_from_slice(&output);
         Ok(bin.into())
     } else {
-        // Fast path: write to Vec with small initial capacity
-        let mut output: Vec<u8> = Vec::with_capacity(128);
-        direct_json::term_to_json(term, &mut output, opts)
+        // Fast path: write directly to a NIF binary (no intermediate Vec copy)
+        let mut writer = nif_binary_writer::NifBinaryWriter::new(128);
+        direct_json::term_to_json(term, &mut writer, opts)
             .map_err(|e| Error::RaiseTerm(Box::new(e.to_string())))?;
-        let mut bin = rustler::NewBinary::new(env, output.len());
-        bin.as_mut_slice().copy_from_slice(&output);
-        Ok(bin.into())
+        Ok(writer.into_binary(env))
     }
 }
 
+#[cfg(not(fuzzing))]
 /// Shared decode implementation used by both normal and dirty scheduler NIFs
 fn decode_impl<'a>(
     env: Env<'a>,
@@ -189,9 +217,11 @@ fn decode_impl<'a>(
         validate_strings: get_opt_bool(env, opts_map, atoms::validate_strings(), true),
     };
 
-    direct_decode::json_to_term(env, &input, decode_opts).map_err(|e| Error::RaiseTerm(Box::new(e)))
+    direct_decode::json_to_term(env, &input, decode_opts)
+        .map_err(|(msg, pos)| Error::RaiseTerm(Box::new((msg.into_owned(), pos))))
 }
 
+#[cfg(not(fuzzing))]
 /// Direct encode on normal scheduler
 #[rustler::nif(name = "nif_encode_direct")]
 fn encode_direct<'a>(
@@ -202,6 +232,7 @@ fn encode_direct<'a>(
     encode_direct_impl(env, term, opts_map)
 }
 
+#[cfg(not(fuzzing))]
 /// Direct encode on dirty CPU scheduler for large payloads
 #[rustler::nif(name = "nif_encode_direct_dirty", schedule = "DirtyCpu")]
 fn encode_direct_dirty<'a>(
@@ -212,6 +243,7 @@ fn encode_direct_dirty<'a>(
     encode_direct_impl(env, term, opts_map)
 }
 
+#[cfg(not(fuzzing))]
 /// Direct decode on normal scheduler
 #[rustler::nif(name = "nif_decode")]
 fn decode<'a>(
@@ -222,6 +254,7 @@ fn decode<'a>(
     decode_impl(env, input, opts_map)
 }
 
+#[cfg(not(fuzzing))]
 /// Direct decode on dirty CPU scheduler for large payloads
 #[rustler::nif(name = "nif_decode_dirty", schedule = "DirtyCpu")]
 fn decode_dirty<'a>(
@@ -232,6 +265,7 @@ fn decode_dirty<'a>(
     decode_impl(env, input, opts_map)
 }
 
+#[cfg(not(fuzzing))]
 /// Shared encode_fields implementation used by both normal and dirty scheduler NIFs.
 ///
 /// Takes pre-escaped key binaries and a values list. Each value is either:
@@ -258,42 +292,50 @@ fn encode_fields_impl<'a>(
     let escape_mode = direct_json::EscapeMode::from_term(escape_mode_term);
     let pre_encoded_atom = atoms::__pre_encoded__();
 
-    // Estimate initial capacity: { + keys + values + separators
-    let mut output: Vec<u8> = Vec::with_capacity(64 + keys_list.len() * 32);
-    output.push(b'{');
+    // Write directly to a NIF binary (no intermediate Vec copy)
+    let mut output = nif_binary_writer::NifBinaryWriter::new(64 + keys_list.len() * 32);
+    {
+        use std::io::Write;
+        output
+            .write_all(b"{")
+            .map_err(|e| Error::RaiseTerm(Box::new(e.to_string())))?;
 
-    for (i, (key_term, val_term)) in keys_list.iter().zip(values_list.iter()).enumerate() {
-        if i > 0 {
-            output.push(b',');
+        for (i, (key_term, val_term)) in keys_list.iter().zip(values_list.iter()).enumerate() {
+            if i > 0 {
+                output
+                    .write_all(b",")
+                    .map_err(|e| Error::RaiseTerm(Box::new(e.to_string())))?;
+            }
+
+            // Write pre-escaped key (e.g. "\"name\":")
+            let key_bin: rustler::Binary = key_term
+                .decode()
+                .map_err(|_| Error::RaiseTerm(Box::new("key must be a binary".to_string())))?;
+            output
+                .write_all(key_bin.as_slice())
+                .map_err(|e| Error::RaiseTerm(Box::new(e.to_string())))?;
+
+            // Write value
+            write_field_value(&mut output, *val_term, escape_mode, pre_encoded_atom)
+                .map_err(|e| Error::RaiseTerm(Box::new(e.to_string())))?;
         }
 
-        // Write pre-escaped key (e.g. "\"name\":")
-        let key_bin: rustler::Binary = key_term
-            .decode()
-            .map_err(|_| Error::RaiseTerm(Box::new("key must be a binary".to_string())))?;
-        output.extend_from_slice(key_bin.as_slice());
-
-        // Write value
-        write_field_value(&mut output, *val_term, escape_mode, pre_encoded_atom)
+        output
+            .write_all(b"}")
             .map_err(|e| Error::RaiseTerm(Box::new(e.to_string())))?;
     }
 
-    output.push(b'}');
-
-    let mut bin = rustler::NewBinary::new(env, output.len());
-    bin.as_mut_slice().copy_from_slice(&output);
-    Ok(bin.into())
+    Ok(output.into_binary(env))
 }
 
+#[cfg(not(fuzzing))]
 /// Write a single field value to the output buffer.
-fn write_field_value(
-    output: &mut Vec<u8>,
+fn write_field_value<W: std::io::Write>(
+    output: &mut W,
     term: Term,
     escape_mode: direct_json::EscapeMode,
     pre_encoded_atom: rustler::types::atom::Atom,
 ) -> Result<(), std::io::Error> {
-    use std::io::Write;
-
     match term.get_type() {
         rustler::TermType::Atom => {
             if let Ok(s) = term.atom_to_string() {
@@ -315,7 +357,7 @@ fn write_field_value(
                 std::io::Error::new(std::io::ErrorKind::InvalidData, "Failed to decode binary")
             })?;
             let bytes = binary.as_slice();
-            match std::str::from_utf8(bytes) {
+            match simdutf8::basic::from_utf8(bytes) {
                 Ok(s) => direct_json::write_json_string_escaped_pub(s, output, escape_mode)?,
                 Err(_) => {
                     return Err(std::io::Error::new(
@@ -374,6 +416,7 @@ fn write_field_value(
     Ok(())
 }
 
+#[cfg(not(fuzzing))]
 /// Encode struct fields on normal scheduler
 #[rustler::nif(name = "nif_encode_fields")]
 fn encode_fields<'a>(
@@ -386,6 +429,7 @@ fn encode_fields<'a>(
     encode_fields_impl(env, keys, values, escape_mode, strict_keys)
 }
 
+#[cfg(not(fuzzing))]
 /// Encode struct fields on dirty CPU scheduler
 #[rustler::nif(name = "nif_encode_fields_dirty", schedule = "DirtyCpu")]
 fn encode_fields_dirty<'a>(

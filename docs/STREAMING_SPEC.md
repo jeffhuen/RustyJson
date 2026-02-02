@@ -18,7 +18,7 @@ Current RustyJson requires the entire data structure in memory before encoding, 
 3. **Memory bounded** - Peak memory independent of total payload size
 4. **NIF-safe** - Don't block BEAM schedulers
 5. **Composable** - Works with Elixir Stream/Enum
-6. **Zero unsafe Rust** - Maintain our safety guarantees
+6. **Controlled unsafe Rust** - Maintain our safety guarantees (SIMD only)
 
 ## Streaming Encode
 

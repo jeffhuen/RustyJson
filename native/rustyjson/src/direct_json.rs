@@ -1,6 +1,7 @@
 use crate::decimal::try_format_decimal;
 use rustler::types::{ListIterator, MapIterator};
 use rustler::{Binary, Term, TermType};
+use smallvec::SmallVec;
 use std::collections::HashSet;
 use std::io::Write;
 
@@ -35,19 +36,21 @@ impl EscapeMode {
 /// Shared formatting context holding heap-allocated separator strings.
 /// Referenced by `FormatOptions` to avoid cloning on every `nested()` call.
 pub struct FormatContext {
-    pub line_separator: Vec<u8>,
-    pub after_colon: Vec<u8>,
-    pub indent: Vec<u8>,
+    pub line_separator: SmallVec<[u8; 16]>,
+    pub after_colon: SmallVec<[u8; 16]>,
+    pub indent: SmallVec<[u8; 16]>,
     pub strict_keys: bool,
+    pub sort_keys: bool,
 }
 
 impl Default for FormatContext {
     fn default() -> Self {
         Self {
-            line_separator: b"\n".to_vec(),
-            after_colon: b" ".to_vec(),
-            indent: b"  ".to_vec(),
+            line_separator: SmallVec::from_slice(b"\n"),
+            after_colon: SmallVec::from_slice(b" "),
+            indent: SmallVec::from_slice(b"  "),
             strict_keys: false,
+            sort_keys: false,
         }
     }
 }
@@ -111,6 +114,11 @@ impl<'ctx> FormatOptions<'ctx> {
     #[inline(always)]
     pub fn strict_keys(&self) -> bool {
         self.ctx.strict_keys
+    }
+
+    #[inline(always)]
+    pub fn sort_keys(&self) -> bool {
+        self.ctx.sort_keys
     }
 
     #[inline(always)]
@@ -227,7 +235,7 @@ fn write_binary<W: Write>(
     if let Ok(binary) = term.decode::<Binary>() {
         let bytes = binary.as_slice();
         // Check if valid UTF-8 - error on invalid bytes (Jason compatibility)
-        match std::str::from_utf8(bytes) {
+        match simdutf8::basic::from_utf8(bytes) {
             Ok(s) => {
                 write_json_string_escaped(s, writer, opts.escape_mode())?;
                 Ok(())
@@ -298,27 +306,25 @@ fn write_list<W: Write>(
     writer: &mut W,
     opts: FormatOptions<'_>,
 ) -> Result<(), std::io::Error> {
-    // Use ListIterator to avoid allocating a Vec (get via decode)
-    let iter: ListIterator = term.decode().map_err(|_| {
+    let mut iter: ListIterator = term.decode().map_err(|_| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, "Failed to decode list")
     })?;
 
-    // Peek to check if empty
-    let mut iter = iter.peekable();
-    if iter.peek().is_none() {
-        writer.write_all(b"[]")?;
-        return Ok(());
-    }
+    let first_item = match iter.next() {
+        None => {
+            writer.write_all(b"[]")?;
+            return Ok(());
+        }
+        Some(item) => item,
+    };
 
     let nested = opts.nested();
     writer.write_all(b"[")?;
+    nested.write_newline(writer)?;
+    term_to_json(first_item, writer, nested)?;
 
-    let mut first = true;
     for item in iter {
-        if !first {
-            writer.write_all(b",")?;
-        }
-        first = false;
+        writer.write_all(b",")?;
         nested.write_newline(writer)?;
         term_to_json(item, writer, nested)?;
     }
@@ -326,6 +332,60 @@ fn write_list<W: Write>(
     opts.write_newline(writer)?;
     writer.write_all(b"]")?;
     Ok(())
+}
+
+/// Extract the JSON key string from a Term (atom, binary, or integer).
+/// Returns Ok(key_string) or Err. For atoms, returns None for "__struct__" to signal skipping.
+#[inline]
+fn key_to_string(key: &Term) -> Result<Option<String>, std::io::Error> {
+    match key.get_type() {
+        TermType::Atom => {
+            if let Ok(key_str) = key.atom_to_string() {
+                if key_str == "__struct__" {
+                    Ok(None)
+                } else {
+                    Ok(Some(key_str))
+                }
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Failed to decode atom key",
+                ))
+            }
+        }
+        TermType::Binary => {
+            if let Ok(binary) = key.decode::<Binary>() {
+                if let Ok(s) = std::str::from_utf8(binary.as_slice()) {
+                    Ok(Some(s.to_string()))
+                } else {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Non-UTF8 binary as map key",
+                    ))
+                }
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Failed to decode binary key",
+                ))
+            }
+        }
+        TermType::Integer => {
+            if let Ok(n) = key.decode::<i64>() {
+                let mut buf = itoa::Buffer::new();
+                Ok(Some(buf.format(n).to_string()))
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Failed to decode integer key",
+                ))
+            }
+        }
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Map key must be atom, string, or integer",
+        )),
+    }
 }
 
 #[inline(always)]
@@ -347,6 +407,71 @@ fn write_map<W: Write>(
         }
     }
 
+    if opts.sort_keys() {
+        write_map_sorted(term, writer, opts)
+    } else {
+        write_map_unsorted(term, writer, opts)
+    }
+}
+
+/// Write map entries in sorted key order.
+fn write_map_sorted<W: Write>(
+    term: Term,
+    writer: &mut W,
+    opts: FormatOptions<'_>,
+) -> Result<(), std::io::Error> {
+    let iter = MapIterator::new(term).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "Failed to iterate map")
+    })?;
+
+    let strict = opts.strict_keys();
+    let mut seen_keys: Option<HashSet<String>> = if strict { Some(HashSet::new()) } else { None };
+
+    // Collect entries, skipping __struct__
+    let mut entries: Vec<(String, Term)> = Vec::new();
+    for (key, value) in iter {
+        match key_to_string(&key)? {
+            None => continue, // __struct__
+            Some(key_str) => {
+                check_strict_key(&mut seen_keys, &key_str)?;
+                entries.push((key_str, value));
+            }
+        }
+    }
+
+    if entries.is_empty() {
+        writer.write_all(b"{}")?;
+        return Ok(());
+    }
+
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let nested = opts.nested();
+    let escape = opts.escape_mode();
+
+    writer.write_all(b"{")?;
+    for (i, (key_str, value)) in entries.iter().enumerate() {
+        if i > 0 {
+            writer.write_all(b",")?;
+        }
+        nested.write_newline(writer)?;
+        write_json_string(key_str, writer, escape)?;
+        writer.write_all(b":")?;
+        nested.write_space(writer)?;
+        term_to_json(*value, writer, nested)?;
+    }
+    opts.write_newline(writer)?;
+    writer.write_all(b"}")?;
+    Ok(())
+}
+
+/// Write map entries in iteration order (unsorted, zero overhead).
+#[inline(always)]
+fn write_map_unsorted<W: Write>(
+    term: Term,
+    writer: &mut W,
+    opts: FormatOptions<'_>,
+) -> Result<(), std::io::Error> {
     let iter = MapIterator::new(term).ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, "Failed to iterate map")
     })?;
@@ -478,26 +603,22 @@ fn try_format_special_struct_from_name<W: Write>(
             }
         }
         "Elixir.Date" => {
-            if let Some(date_str) = try_format_date(term) {
-                write_json_string(&date_str, writer, escape)?;
+            if try_write_date(term, writer)? {
                 return Ok(Some(()));
             }
         }
         "Elixir.Time" => {
-            if let Some(time_str) = try_format_time(term) {
-                write_json_string(&time_str, writer, escape)?;
+            if try_write_time(term, writer)? {
                 return Ok(Some(()));
             }
         }
         "Elixir.NaiveDateTime" => {
-            if let Some(dt_str) = try_format_naive_datetime(term) {
-                write_json_string(&dt_str, writer, escape)?;
+            if try_write_naive_datetime(term, writer)? {
                 return Ok(Some(()));
             }
         }
         "Elixir.DateTime" => {
-            if let Some(dt_str) = try_format_datetime(term) {
-                write_json_string(&dt_str, writer, escape)?;
+            if try_write_datetime(term, writer)? {
                 return Ok(Some(()));
             }
         }
@@ -577,127 +698,250 @@ fn write_iodata<W: Write>(writer: &mut W, term: Term) -> Result<(), std::io::Err
     }
 }
 
-/// Format Elixir Date as ISO8601 string: "YYYY-MM-DD"
-fn try_format_date(term: &Term) -> Option<String> {
-    let env = term.get_env();
-    let t = *term;
-
-    let year: i32 = get_struct_field(t, env, "year")?;
-    let month: u32 = get_struct_field(t, env, "month")?;
-    let day: u32 = get_struct_field(t, env, "day")?;
-
-    Some(format!("{:04}-{:02}-{:02}", year, month, day))
+/// Write a zero-padded unsigned integer directly to the writer.
+#[inline]
+fn write_padded<W: Write>(writer: &mut W, val: u32, width: u8) -> std::io::Result<()> {
+    let mut buf = [b'0'; 6]; // max width we need is 6 (microseconds)
+    let w = width as usize;
+    let mut v = val;
+    let mut i = w;
+    while i > 0 {
+        i -= 1;
+        buf[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+    }
+    writer.write_all(&buf[..w])
 }
 
-/// Format Elixir Time as ISO8601 string: "HH:MM:SS" or "HH:MM:SS.ffffff"
-fn try_format_time(term: &Term) -> Option<String> {
-    let env = term.get_env();
-    let t = *term;
-
-    let hour: u32 = get_struct_field(t, env, "hour")?;
-    let minute: u32 = get_struct_field(t, env, "minute")?;
-    let second: u32 = get_struct_field(t, env, "second")?;
-    let microsecond: (u32, u32) = get_struct_field_tuple2(t, env, "microsecond")?;
-
-    if microsecond.0 == 0 {
-        Some(format!("{:02}:{:02}:{:02}", hour, minute, second))
+/// Write a zero-padded signed integer directly to the writer.
+/// For negative values, writes '-' prefix then the absolute value zero-padded to `width` digits.
+#[inline]
+fn write_padded_i32<W: Write>(writer: &mut W, val: i32, width: u8) -> std::io::Result<()> {
+    if val < 0 {
+        writer.write_all(b"-")?;
+        write_padded(writer, val.unsigned_abs(), width)
     } else {
-        // Format with microseconds, respecting precision
-        let precision = microsecond.1 as usize;
-        let micro_str = format!("{:06}", microsecond.0);
-        Some(format!(
-            "{:02}:{:02}:{:02}.{}",
-            hour,
-            minute,
-            second,
-            &micro_str[..precision]
-        ))
+        write_padded(writer, val as u32, width)
     }
 }
 
-/// Format Elixir NaiveDateTime as ISO8601 string: "YYYY-MM-DDTHH:MM:SS"
-fn try_format_naive_datetime(term: &Term) -> Option<String> {
-    let env = term.get_env();
-    let t = *term;
-
-    let year: i32 = get_struct_field(t, env, "year")?;
-    let month: u32 = get_struct_field(t, env, "month")?;
-    let day: u32 = get_struct_field(t, env, "day")?;
-    let hour: u32 = get_struct_field(t, env, "hour")?;
-    let minute: u32 = get_struct_field(t, env, "minute")?;
-    let second: u32 = get_struct_field(t, env, "second")?;
-    let microsecond: (u32, u32) = get_struct_field_tuple2(t, env, "microsecond")?;
-
-    if microsecond.0 == 0 {
-        Some(format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
-            year, month, day, hour, minute, second
-        ))
-    } else {
-        let precision = microsecond.1 as usize;
-        let micro_str = format!("{:06}", microsecond.0);
-        Some(format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{}",
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second,
-            &micro_str[..precision]
-        ))
+/// Write microsecond fractional part (e.g. ".123456") directly to writer.
+/// Writes `precision` digits from the 6-digit zero-padded microsecond value.
+#[inline]
+fn write_microsecond_frac<W: Write>(
+    writer: &mut W,
+    micro_val: u32,
+    precision: usize,
+) -> std::io::Result<()> {
+    writer.write_all(b".")?;
+    let mut buf = [b'0'; 6];
+    let mut v = micro_val;
+    let mut i = 6;
+    while i > 0 {
+        i -= 1;
+        buf[i] = b'0' + (v % 10) as u8;
+        v /= 10;
     }
+    writer.write_all(&buf[..precision])
 }
 
-/// Format Elixir DateTime as ISO8601 string with timezone
-fn try_format_datetime(term: &Term) -> Option<String> {
+/// Write Elixir Date directly as quoted ISO8601: "YYYY-MM-DD"
+/// Returns Ok(true) if handled, Ok(false) if fields missing.
+fn try_write_date<W: Write>(term: &Term, writer: &mut W) -> std::io::Result<bool> {
     let env = term.get_env();
     let t = *term;
 
-    let year: i32 = get_struct_field(t, env, "year")?;
-    let month: u32 = get_struct_field(t, env, "month")?;
-    let day: u32 = get_struct_field(t, env, "day")?;
-    let hour: u32 = get_struct_field(t, env, "hour")?;
-    let minute: u32 = get_struct_field(t, env, "minute")?;
-    let second: u32 = get_struct_field(t, env, "second")?;
-    let microsecond: (u32, u32) = get_struct_field_tuple2(t, env, "microsecond")?;
-
-    // Get timezone info
-    let std_offset: i32 = get_struct_field(t, env, "std_offset").unwrap_or(0);
-    let utc_offset: i32 = get_struct_field(t, env, "utc_offset").unwrap_or(0);
-    let total_offset = std_offset + utc_offset;
-
-    let base = if microsecond.0 == 0 {
-        format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
-            year, month, day, hour, minute, second
-        )
-    } else {
-        let precision = microsecond.1 as usize;
-        let micro_str = format!("{:06}", microsecond.0);
-        format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{}",
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second,
-            &micro_str[..precision]
-        )
+    let year: i32 = match get_struct_field_atom(t, env, crate::atoms::year()) {
+        Some(v) => v,
+        None => return Ok(false),
+    };
+    let month: u32 = match get_struct_field_atom(t, env, crate::atoms::month()) {
+        Some(v) => v,
+        None => return Ok(false),
+    };
+    let day: u32 = match get_struct_field_atom(t, env, crate::atoms::day()) {
+        Some(v) => v,
+        None => return Ok(false),
     };
 
-    if total_offset == 0 {
-        Some(format!("{}Z", base))
-    } else {
-        let offset_hours = total_offset.abs() / 3600;
-        let offset_mins = (total_offset.abs() % 3600) / 60;
-        let sign = if total_offset >= 0 { '+' } else { '-' };
-        Some(format!(
-            "{}{}{:02}:{:02}",
-            base, sign, offset_hours, offset_mins
-        ))
+    writer.write_all(b"\"")?;
+    write_padded_i32(writer, year, 4)?;
+    writer.write_all(b"-")?;
+    write_padded(writer, month, 2)?;
+    writer.write_all(b"-")?;
+    write_padded(writer, day, 2)?;
+    writer.write_all(b"\"")?;
+    Ok(true)
+}
+
+/// Write Elixir Time directly as quoted ISO8601: "HH:MM:SS" or "HH:MM:SS.ffffff"
+/// Returns Ok(true) if handled, Ok(false) if fields missing.
+fn try_write_time<W: Write>(term: &Term, writer: &mut W) -> std::io::Result<bool> {
+    let env = term.get_env();
+    let t = *term;
+
+    let hour: u32 = match get_struct_field_atom(t, env, crate::atoms::hour()) {
+        Some(v) => v,
+        None => return Ok(false),
+    };
+    let minute: u32 = match get_struct_field_atom(t, env, crate::atoms::minute()) {
+        Some(v) => v,
+        None => return Ok(false),
+    };
+    let second: u32 = match get_struct_field_atom(t, env, crate::atoms::second()) {
+        Some(v) => v,
+        None => return Ok(false),
+    };
+    let microsecond: (u32, u32) =
+        match get_struct_field_tuple2_atom(t, env, crate::atoms::microsecond()) {
+            Some(v) => v,
+            None => return Ok(false),
+        };
+
+    writer.write_all(b"\"")?;
+    write_padded(writer, hour, 2)?;
+    writer.write_all(b":")?;
+    write_padded(writer, minute, 2)?;
+    writer.write_all(b":")?;
+    write_padded(writer, second, 2)?;
+    if microsecond.0 != 0 {
+        let precision = microsecond.1 as usize;
+        write_microsecond_frac(writer, microsecond.0, precision)?;
     }
+    writer.write_all(b"\"")?;
+    Ok(true)
+}
+
+/// Write Elixir NaiveDateTime directly as quoted ISO8601: "YYYY-MM-DDTHH:MM:SS[.ffffff]"
+/// Returns Ok(true) if handled, Ok(false) if fields missing.
+fn try_write_naive_datetime<W: Write>(term: &Term, writer: &mut W) -> std::io::Result<bool> {
+    let env = term.get_env();
+    let t = *term;
+
+    let year: i32 = match get_struct_field_atom(t, env, crate::atoms::year()) {
+        Some(v) => v,
+        None => return Ok(false),
+    };
+    let month: u32 = match get_struct_field_atom(t, env, crate::atoms::month()) {
+        Some(v) => v,
+        None => return Ok(false),
+    };
+    let day: u32 = match get_struct_field_atom(t, env, crate::atoms::day()) {
+        Some(v) => v,
+        None => return Ok(false),
+    };
+    let hour: u32 = match get_struct_field_atom(t, env, crate::atoms::hour()) {
+        Some(v) => v,
+        None => return Ok(false),
+    };
+    let minute: u32 = match get_struct_field_atom(t, env, crate::atoms::minute()) {
+        Some(v) => v,
+        None => return Ok(false),
+    };
+    let second: u32 = match get_struct_field_atom(t, env, crate::atoms::second()) {
+        Some(v) => v,
+        None => return Ok(false),
+    };
+    let microsecond: (u32, u32) =
+        match get_struct_field_tuple2_atom(t, env, crate::atoms::microsecond()) {
+            Some(v) => v,
+            None => return Ok(false),
+        };
+
+    writer.write_all(b"\"")?;
+    write_padded_i32(writer, year, 4)?;
+    writer.write_all(b"-")?;
+    write_padded(writer, month, 2)?;
+    writer.write_all(b"-")?;
+    write_padded(writer, day, 2)?;
+    writer.write_all(b"T")?;
+    write_padded(writer, hour, 2)?;
+    writer.write_all(b":")?;
+    write_padded(writer, minute, 2)?;
+    writer.write_all(b":")?;
+    write_padded(writer, second, 2)?;
+    if microsecond.0 != 0 {
+        let precision = microsecond.1 as usize;
+        write_microsecond_frac(writer, microsecond.0, precision)?;
+    }
+    writer.write_all(b"\"")?;
+    Ok(true)
+}
+
+/// Write Elixir DateTime directly as quoted ISO8601 with timezone: "YYYY-MM-DDTHH:MM:SSZ" or "...±HH:MM"
+/// Returns Ok(true) if handled, Ok(false) if fields missing.
+fn try_write_datetime<W: Write>(term: &Term, writer: &mut W) -> std::io::Result<bool> {
+    let env = term.get_env();
+    let t = *term;
+
+    let year: i32 = match get_struct_field_atom(t, env, crate::atoms::year()) {
+        Some(v) => v,
+        None => return Ok(false),
+    };
+    let month: u32 = match get_struct_field_atom(t, env, crate::atoms::month()) {
+        Some(v) => v,
+        None => return Ok(false),
+    };
+    let day: u32 = match get_struct_field_atom(t, env, crate::atoms::day()) {
+        Some(v) => v,
+        None => return Ok(false),
+    };
+    let hour: u32 = match get_struct_field_atom(t, env, crate::atoms::hour()) {
+        Some(v) => v,
+        None => return Ok(false),
+    };
+    let minute: u32 = match get_struct_field_atom(t, env, crate::atoms::minute()) {
+        Some(v) => v,
+        None => return Ok(false),
+    };
+    let second: u32 = match get_struct_field_atom(t, env, crate::atoms::second()) {
+        Some(v) => v,
+        None => return Ok(false),
+    };
+    let microsecond: (u32, u32) =
+        match get_struct_field_tuple2_atom(t, env, crate::atoms::microsecond()) {
+            Some(v) => v,
+            None => return Ok(false),
+        };
+
+    let std_offset: i32 = get_struct_field_atom(t, env, crate::atoms::std_offset()).unwrap_or(0);
+    let utc_offset: i32 = get_struct_field_atom(t, env, crate::atoms::utc_offset()).unwrap_or(0);
+    let total_offset = std_offset + utc_offset;
+
+    writer.write_all(b"\"")?;
+    write_padded_i32(writer, year, 4)?;
+    writer.write_all(b"-")?;
+    write_padded(writer, month, 2)?;
+    writer.write_all(b"-")?;
+    write_padded(writer, day, 2)?;
+    writer.write_all(b"T")?;
+    write_padded(writer, hour, 2)?;
+    writer.write_all(b":")?;
+    write_padded(writer, minute, 2)?;
+    writer.write_all(b":")?;
+    write_padded(writer, second, 2)?;
+    if microsecond.0 != 0 {
+        let precision = microsecond.1 as usize;
+        write_microsecond_frac(writer, microsecond.0, precision)?;
+    }
+
+    if total_offset == 0 {
+        writer.write_all(b"Z")?;
+    } else {
+        let offset_hours = (total_offset.abs() / 3600) as u32;
+        let offset_mins = ((total_offset.abs() % 3600) / 60) as u32;
+        if total_offset >= 0 {
+            writer.write_all(b"+")?;
+        } else {
+            writer.write_all(b"-")?;
+        }
+        write_padded(writer, offset_hours, 2)?;
+        writer.write_all(b":")?;
+        write_padded(writer, offset_mins, 2)?;
+    }
+
+    writer.write_all(b"\"")?;
+    Ok(true)
 }
 
 /// Format Elixir URI as string
@@ -705,16 +949,24 @@ fn try_format_uri(term: &Term) -> Option<String> {
     let env = term.get_env();
     let t = *term;
 
-    // Build URI string from components
-    let scheme: Option<String> = get_struct_field_opt(t, env, "scheme");
-    let userinfo: Option<String> = get_struct_field_opt(t, env, "userinfo");
-    let host: Option<String> = get_struct_field_opt(t, env, "host");
-    let port: Option<i32> = get_struct_field_opt(t, env, "port");
-    let path: Option<String> = get_struct_field_opt(t, env, "path");
-    let query: Option<String> = get_struct_field_opt(t, env, "query");
-    let fragment: Option<String> = get_struct_field_opt(t, env, "fragment");
+    // Build URI string from components using cached atoms
+    let scheme: Option<String> = get_struct_field_opt_atom(t, env, crate::atoms::scheme());
+    let userinfo: Option<String> = get_struct_field_opt_atom(t, env, crate::atoms::userinfo());
+    let host: Option<String> = get_struct_field_opt_atom(t, env, crate::atoms::host());
+    let port: Option<i32> = get_struct_field_opt_atom(t, env, crate::atoms::port());
+    let path: Option<String> = get_struct_field_opt_atom(t, env, crate::atoms::path());
+    let query: Option<String> = get_struct_field_opt_atom(t, env, crate::atoms::query());
+    let fragment: Option<String> = get_struct_field_opt_atom(t, env, crate::atoms::fragment());
 
-    let mut result = String::new();
+    // Pre-compute capacity to avoid repeated reallocations
+    let estimated_cap = scheme.as_ref().map_or(0, |s| s.len() + 3) // "scheme://"
+        + userinfo.as_ref().map_or(0, |u| u.len() + 1) // "userinfo@"
+        + host.as_ref().map_or(0, |h| h.len())
+        + port.map_or(0, |_| 6) // ":65535"
+        + path.as_ref().map_or(0, |p| p.len())
+        + query.as_ref().map_or(0, |q| q.len() + 1) // "?query"
+        + fragment.as_ref().map_or(0, |f| f.len() + 1); // "#fragment"
+    let mut result = String::with_capacity(estimated_cap);
 
     if let Some(ref s) = scheme {
         result.push_str(s);
@@ -770,14 +1022,8 @@ fn try_format_mapset<W: Write>(
     let env = term.get_env();
     let t = *term;
 
-    // Get the internal map field
-    let map_atom = rustler::types::atom::Atom::from_str(env, "map").ok();
-    let map_atom = match map_atom {
-        Some(a) => a,
-        None => return Ok(None),
-    };
-
-    let map_term = match t.map_get(map_atom.to_term(env)) {
+    // Get the internal map field using cached atom
+    let map_term = match t.map_get(crate::atoms::map().to_term(env)) {
         Ok(m) => m,
         Err(_) => return Ok(None),
     };
@@ -816,15 +1062,15 @@ fn try_format_range<W: Write>(
     let env = term.get_env();
     let t = *term;
 
-    let first: i64 = match get_struct_field(t, env, "first") {
+    let first: i64 = match get_struct_field_atom(t, env, crate::atoms::first()) {
         Some(v) => v,
         None => return Ok(None),
     };
-    let last: i64 = match get_struct_field(t, env, "last") {
+    let last: i64 = match get_struct_field_atom(t, env, crate::atoms::last()) {
         Some(v) => v,
         None => return Ok(None),
     };
-    let step: i64 = get_struct_field(t, env, "step").unwrap_or(1);
+    let step: i64 = get_struct_field_atom(t, env, crate::atoms::step()).unwrap_or(1);
 
     let escape = opts.escape_mode();
     let nested = opts.nested();
@@ -862,24 +1108,24 @@ fn try_format_range<W: Write>(
     Ok(Some(()))
 }
 
-/// Helper to get a struct field value
-fn get_struct_field<'a, T: rustler::Decoder<'a>>(
+/// Helper to get a struct field value using a pre-interned atom (no Atom::from_str overhead)
+#[inline]
+fn get_struct_field_atom<'a, T: rustler::Decoder<'a>>(
     term: Term<'a>,
     env: rustler::Env<'a>,
-    field: &str,
+    field_atom: rustler::types::atom::Atom,
 ) -> Option<T> {
-    let field_atom = rustler::types::atom::Atom::from_str(env, field).ok()?;
     let field_term = term.map_get(field_atom.to_term(env)).ok()?;
     field_term.decode().ok()
 }
 
-/// Helper to get an optional struct field (returns None if field is nil)
-fn get_struct_field_opt<'a, T: rustler::Decoder<'a>>(
+/// Helper to get an optional struct field using a pre-interned atom (returns None if field is nil)
+#[inline]
+fn get_struct_field_opt_atom<'a, T: rustler::Decoder<'a>>(
     term: Term<'a>,
     env: rustler::Env<'a>,
-    field: &str,
+    field_atom: rustler::types::atom::Atom,
 ) -> Option<T> {
-    let field_atom = rustler::types::atom::Atom::from_str(env, field).ok()?;
     let field_term = term.map_get(field_atom.to_term(env)).ok()?;
 
     // Check if nil
@@ -894,17 +1140,17 @@ fn get_struct_field_opt<'a, T: rustler::Decoder<'a>>(
     field_term.decode().ok()
 }
 
-/// Helper to get a 2-tuple field like microsecond: {123456, 6}
-fn get_struct_field_tuple2<'a, T1, T2>(
+/// Helper to get a 2-tuple field using a pre-interned atom
+#[inline]
+fn get_struct_field_tuple2_atom<'a, T1, T2>(
     term: Term<'a>,
     env: rustler::Env<'a>,
-    field: &str,
+    field_atom: rustler::types::atom::Atom,
 ) -> Option<(T1, T2)>
 where
     T1: rustler::Decoder<'a>,
     T2: rustler::Decoder<'a>,
 {
-    let field_atom = rustler::types::atom::Atom::from_str(env, field).ok()?;
     let field_term = term.map_get(field_atom.to_term(env)).ok()?;
     let tuple = rustler::types::tuple::get_tuple(field_term).ok()?;
     if tuple.len() != 2 {
@@ -948,22 +1194,180 @@ fn write_tuple<W: Write>(
     Ok(())
 }
 
-/// Table for checking if a byte needs escaping in JSON mode
-/// 0 = safe, 1 = needs escape
-static ESCAPE_TABLE: [u8; 256] = {
-    let mut table = [0u8; 256];
-    // Control characters 0x00-0x1f need escaping
-    let mut i = 0;
-    while i < 32 {
-        table[i] = 1;
-        i += 1;
-    }
-    table[b'"' as usize] = 1;
-    table[b'\\' as usize] = 1;
-    table
-};
+// ---------------------------------------------------------------------------
+// SIMD escape scanning — delegates to portable SIMD in simd_utils
+// ---------------------------------------------------------------------------
 
-/// Fast JSON string escaping - processes safe bytes in bulk
+/// Find the index of the first byte in `bytes[start..]` needing JSON escape
+/// (control char < 0x20, `"`, or `\`). Returns `bytes.len()` if none found.
+#[inline]
+fn find_next_escape_json(bytes: &[u8], start: usize) -> usize {
+    crate::simd_utils::find_escape_json(bytes, start)
+}
+
+/// Find the next byte needing escape in HtmlSafe mode.
+#[inline]
+fn find_next_escape_html(bytes: &[u8], start: usize) -> usize {
+    crate::simd_utils::find_escape_html(bytes, start)
+}
+
+/// Find the next byte needing escape in UnicodeSafe mode.
+#[inline]
+fn find_next_escape_unicode(bytes: &[u8], start: usize) -> usize {
+    crate::simd_utils::find_escape_unicode(bytes, start)
+}
+
+/// Find the next byte needing escape in JavaScriptSafe mode.
+#[inline]
+fn find_next_escape_javascript(bytes: &[u8], start: usize) -> usize {
+    crate::simd_utils::find_escape_javascript(bytes, start)
+}
+
+// ---------------------------------------------------------------------------
+// Escape byte writer helper
+// ---------------------------------------------------------------------------
+
+/// Write the JSON escape sequence for a single byte that needs escaping.
+#[inline]
+fn write_escape_byte<W: Write>(writer: &mut W, byte: u8) -> std::io::Result<()> {
+    match byte {
+        b'"' => writer.write_all(b"\\\""),
+        b'\\' => writer.write_all(b"\\\\"),
+        b'\n' => writer.write_all(b"\\n"),
+        b'\r' => writer.write_all(b"\\r"),
+        b'\t' => writer.write_all(b"\\t"),
+        0x08 => writer.write_all(b"\\b"),
+        0x0c => writer.write_all(b"\\f"),
+        _ => write!(writer, "\\u{:04x}", byte),
+    }
+}
+
+/// Handle one escape event for HtmlSafe mode starting at `pos`.
+/// Returns the next position to continue scanning from.
+#[inline]
+fn write_escape_html<W: Write>(writer: &mut W, bytes: &[u8], pos: usize) -> std::io::Result<usize> {
+    let b = bytes[pos];
+    // Standard JSON escapes
+    if b < 0x20 || b == b'"' || b == b'\\' {
+        write_escape_byte(writer, b)?;
+        return Ok(pos + 1);
+    }
+    // HTML-special ASCII
+    match b {
+        b'<' => {
+            writer.write_all(b"\\u003c")?;
+            return Ok(pos + 1);
+        }
+        b'>' => {
+            writer.write_all(b"\\u003e")?;
+            return Ok(pos + 1);
+        }
+        b'&' => {
+            writer.write_all(b"\\u0026")?;
+            return Ok(pos + 1);
+        }
+        b'/' => {
+            writer.write_all(b"\\/")?;
+            return Ok(pos + 1);
+        }
+        _ => {}
+    }
+    // High byte (>= 0xE2) — check for U+2028 / U+2029 (encoded as E2 80 A8 / E2 80 A9)
+    if b >= 0xE2 && pos + 2 < bytes.len() && bytes[pos] == 0xE2 && bytes[pos + 1] == 0x80 {
+        if bytes[pos + 2] == 0xA8 {
+            writer.write_all(b"\\u2028")?;
+            return Ok(pos + 3);
+        }
+        if bytes[pos + 2] == 0xA9 {
+            writer.write_all(b"\\u2029")?;
+            return Ok(pos + 3);
+        }
+    }
+    // Not actually something we need to escape — write the full UTF-8 char and skip past it
+    let char_len = utf8_char_len(b);
+    let end = (pos + char_len).min(bytes.len());
+    writer.write_all(&bytes[pos..end])?;
+    Ok(end)
+}
+
+/// Handle one escape event for UnicodeSafe mode starting at `pos`.
+/// Returns the next position to continue scanning from.
+#[inline]
+fn write_escape_unicode_at<W: Write>(
+    writer: &mut W,
+    _s: &str,
+    bytes: &[u8],
+    pos: usize,
+) -> std::io::Result<usize> {
+    let b = bytes[pos];
+    // Standard JSON escapes
+    if b < 0x20 || b == b'"' || b == b'\\' {
+        write_escape_byte(writer, b)?;
+        return Ok(pos + 1);
+    }
+    // Non-ASCII: escape as \uXXXX
+    if b >= 0x80 {
+        let char_len = utf8_char_len(b);
+        let end = (pos + char_len).min(bytes.len());
+        if let Ok(ch_str) = std::str::from_utf8(&bytes[pos..end]) {
+            for ch in ch_str.chars() {
+                write!(writer, "\\u{:04x}", ch as u32)?;
+            }
+        }
+        return Ok(end);
+    }
+    // Should not reach here, but write byte as-is
+    writer.write_all(&bytes[pos..pos + 1])?;
+    Ok(pos + 1)
+}
+
+/// Handle one escape event for JavaScriptSafe mode starting at `pos`.
+/// Returns the next position to continue scanning from.
+#[inline]
+fn write_escape_javascript_at<W: Write>(
+    writer: &mut W,
+    bytes: &[u8],
+    pos: usize,
+) -> std::io::Result<usize> {
+    let b = bytes[pos];
+    // Standard JSON escapes
+    if b < 0x20 || b == b'"' || b == b'\\' {
+        write_escape_byte(writer, b)?;
+        return Ok(pos + 1);
+    }
+    // High byte (>= 0xE2) — check for U+2028 / U+2029
+    if b >= 0xE2 && pos + 2 < bytes.len() && bytes[pos] == 0xE2 && bytes[pos + 1] == 0x80 {
+        if bytes[pos + 2] == 0xA8 {
+            writer.write_all(b"\\u2028")?;
+            return Ok(pos + 3);
+        }
+        if bytes[pos + 2] == 0xA9 {
+            writer.write_all(b"\\u2029")?;
+            return Ok(pos + 3);
+        }
+    }
+    // Not actually something we need to escape — write the full UTF-8 char
+    let char_len = utf8_char_len(b);
+    let end = (pos + char_len).min(bytes.len());
+    writer.write_all(&bytes[pos..end])?;
+    Ok(end)
+}
+
+/// Returns the length of a UTF-8 character from its first byte.
+#[inline(always)]
+fn utf8_char_len(b: u8) -> usize {
+    if b < 0x80 {
+        1
+    } else if b < 0xE0 {
+        2
+    } else if b < 0xF0 {
+        3
+    } else {
+        4
+    }
+}
+
+/// Fast JSON string escaping - processes safe bytes in bulk using SIMD scanning.
 ///
 /// Takes `&str` to guarantee valid UTF-8 at compile time, eliminating unsafe code.
 /// The fast path converts to bytes internally (zero-cost operation).
@@ -976,73 +1380,58 @@ fn write_json_string_escaped<W: Write>(
     let bytes = s.as_bytes();
     writer.write_all(b"\"")?;
 
-    // For standard JSON mode, use the fast path (byte-based)
-    if escape_mode == EscapeMode::Json {
-        let mut start = 0;
-        for (i, &byte) in bytes.iter().enumerate() {
-            if ESCAPE_TABLE[byte as usize] == 1 {
-                // Write everything up to this point
-                if start < i {
-                    writer.write_all(&bytes[start..i])?;
+    match escape_mode {
+        EscapeMode::Json => {
+            let mut pos = 0;
+            while pos < bytes.len() {
+                let next = find_next_escape_json(bytes, pos);
+                if next > pos {
+                    writer.write_all(&bytes[pos..next])?;
                 }
-                // Write escape sequence
-                match byte {
-                    b'"' => writer.write_all(b"\\\"")?,
-                    b'\\' => writer.write_all(b"\\\\")?,
-                    b'\n' => writer.write_all(b"\\n")?,
-                    b'\r' => writer.write_all(b"\\r")?,
-                    b'\t' => writer.write_all(b"\\t")?,
-                    b'\x08' => writer.write_all(b"\\b")?,
-                    b'\x0c' => writer.write_all(b"\\f")?,
-                    _ => write!(writer, "\\u{:04x}", byte)?,
+                if next >= bytes.len() {
+                    break;
                 }
-                start = i + 1;
+                write_escape_byte(writer, bytes[next])?;
+                pos = next + 1;
             }
         }
-        // Write remaining bytes
-        if start < bytes.len() {
-            writer.write_all(&bytes[start..])?;
+        EscapeMode::HtmlSafe => {
+            let mut pos = 0;
+            while pos < bytes.len() {
+                let next = find_next_escape_html(bytes, pos);
+                if next > pos {
+                    writer.write_all(&bytes[pos..next])?;
+                }
+                if next >= bytes.len() {
+                    break;
+                }
+                pos = write_escape_html(writer, bytes, next)?;
+            }
         }
-    } else {
-        // Slower path for special escape modes - need to handle multi-byte chars
-        for ch in s.chars() {
-            match ch {
-                '"' => writer.write_all(b"\\\"")?,
-                '\\' => writer.write_all(b"\\\\")?,
-                '\n' => writer.write_all(b"\\n")?,
-                '\r' => writer.write_all(b"\\r")?,
-                '\t' => writer.write_all(b"\\t")?,
-                '\x08' => writer.write_all(b"\\b")?,
-                '\x0c' => writer.write_all(b"\\f")?,
-                '\x00'..='\x1f' => write!(writer, "\\u{:04x}", ch as u32)?,
-                // HTML-safe escaping
-                '<' if escape_mode == EscapeMode::HtmlSafe => writer.write_all(b"\\u003c")?,
-                '>' if escape_mode == EscapeMode::HtmlSafe => writer.write_all(b"\\u003e")?,
-                '&' if escape_mode == EscapeMode::HtmlSafe => writer.write_all(b"\\u0026")?,
-                '/' if escape_mode == EscapeMode::HtmlSafe => writer.write_all(b"\\/")?,
-                // JavaScript-safe: escape line/paragraph separators
-                '\u{2028}'
-                    if escape_mode == EscapeMode::JavaScriptSafe
-                        || escape_mode == EscapeMode::HtmlSafe =>
-                {
-                    writer.write_all(b"\\u2028")?
+        EscapeMode::UnicodeSafe => {
+            let mut pos = 0;
+            while pos < bytes.len() {
+                let next = find_next_escape_unicode(bytes, pos);
+                if next > pos {
+                    writer.write_all(&bytes[pos..next])?;
                 }
-                '\u{2029}'
-                    if escape_mode == EscapeMode::JavaScriptSafe
-                        || escape_mode == EscapeMode::HtmlSafe =>
-                {
-                    writer.write_all(b"\\u2029")?
+                if next >= bytes.len() {
+                    break;
                 }
-                // Unicode-safe: escape all non-ASCII
-                c if escape_mode == EscapeMode::UnicodeSafe && !c.is_ascii() => {
-                    write!(writer, "\\u{:04x}", c as u32)?
+                pos = write_escape_unicode_at(writer, s, bytes, next)?;
+            }
+        }
+        EscapeMode::JavaScriptSafe => {
+            let mut pos = 0;
+            while pos < bytes.len() {
+                let next = find_next_escape_javascript(bytes, pos);
+                if next > pos {
+                    writer.write_all(&bytes[pos..next])?;
                 }
-                // Default: write character as-is
-                c => {
-                    let mut buf = [0u8; 4];
-                    let encoded = c.encode_utf8(&mut buf);
-                    writer.write_all(encoded.as_bytes())?;
+                if next >= bytes.len() {
+                    break;
                 }
+                pos = write_escape_javascript_at(writer, bytes, next)?;
             }
         }
     }
@@ -1073,6 +1462,35 @@ pub fn write_json_string_escaped_pub<W: Write>(
 /// Public wrapper for write_integer, used by encode_fields NIF
 pub fn write_integer_pub<W: Write>(term: Term, writer: &mut W) -> Result<(), std::io::Error> {
     write_integer(term, writer)
+}
+
+#[cfg(feature = "bench")]
+pub mod bench_helpers {
+    use super::*;
+
+    pub fn escape_string_json(input: &str) -> Vec<u8> {
+        let mut buf = Vec::new();
+        write_json_string_escaped(input, &mut buf, EscapeMode::Json).unwrap();
+        buf
+    }
+
+    pub fn escape_string_html(input: &str) -> Vec<u8> {
+        let mut buf = Vec::new();
+        write_json_string_escaped(input, &mut buf, EscapeMode::HtmlSafe).unwrap();
+        buf
+    }
+
+    pub fn escape_string_unicode(input: &str) -> Vec<u8> {
+        let mut buf = Vec::new();
+        write_json_string_escaped(input, &mut buf, EscapeMode::UnicodeSafe).unwrap();
+        buf
+    }
+
+    pub fn escape_string_javascript(input: &str) -> Vec<u8> {
+        let mut buf = Vec::new();
+        write_json_string_escaped(input, &mut buf, EscapeMode::JavaScriptSafe).unwrap();
+        buf
+    }
 }
 
 #[cfg(test)]

@@ -221,15 +221,11 @@ defmodule OrderedObjectTest do
     test "pretty print via Formatter preserves key order" do
       obj = %RustyJson.OrderedObject{values: [{"z", 1}, {"a", 2}]}
       compact = RustyJson.encode!(obj)
+      # Verify compact encoding preserves order (the encode test also checks this)
+      assert compact == ~s({"z":1,"a":2})
+      # Pretty printing operates on the JSON string, so order is preserved
       pretty = RustyJson.Formatter.pretty_print(compact)
-      # Pretty-printed output should contain both keys
-      assert pretty =~ "\"z\""
-      assert pretty =~ "\"a\""
-      # z should appear before a in the output
-      z_pos = :binary.match(pretty, "\"z\"") |> elem(0)
-      a_pos = :binary.match(pretty, "\"a\"") |> elem(0)
-      assert z_pos < a_pos
-      assert pretty =~ "\n"
+      assert pretty =~ ~r/"z".*"a"/s
     end
   end
 

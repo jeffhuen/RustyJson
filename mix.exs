@@ -1,7 +1,7 @@
 defmodule RustyJson.MixProject do
   use Mix.Project
 
-  @version "0.3.4"
+  @version "0.3.5"
 
   def project do
     [
@@ -15,7 +15,9 @@ defmodule RustyJson.MixProject do
       package: package(),
       docs: docs(),
       source_url: "https://github.com/jeffhuen/rustyjson",
-      dialyzer: dialyzer()
+      dialyzer: dialyzer(),
+      test_paths: ["test"],
+      test_ignore_filters: [~r"/fixtures/"]
     ]
   end
 
@@ -33,6 +35,14 @@ defmodule RustyJson.MixProject do
       {:ex_doc, "~> 0.30", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
+    ] ++ bench_deps()
+  end
+
+  # Benchmark-only deps — remove this block when no longer needed
+  defp bench_deps do
+    [
+      {:benchee, "~> 1.0", only: [:dev, :test], runtime: false},
+      {:jason, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
   end
 

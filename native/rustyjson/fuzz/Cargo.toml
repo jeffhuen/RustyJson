@@ -1,0 +1,63 @@
+[package]
+name = "rustyjson-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.rustyjson]
+path = ".."
+features = ["bench"]
+default-features = false
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "fuzz_decode_scan_string"
+path = "fuzz_targets/fuzz_decode_scan_string.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_decode_structural_index"
+path = "fuzz_targets/fuzz_decode_structural_index.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_decode_skip_whitespace"
+path = "fuzz_targets/fuzz_decode_skip_whitespace.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_decode_number"
+path = "fuzz_targets/fuzz_decode_number.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_decode_escaped_string"
+path = "fuzz_targets/fuzz_decode_escaped_string.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_encode_escape"
+path = "fuzz_targets/fuzz_encode_escape.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_decode_parse_number"
+path = "fuzz_targets/fuzz_decode_parse_number.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_decode_full_json"
+path = "fuzz_targets/fuzz_decode_full_json.rs"
+doc = false

@@ -1,26 +1,21 @@
-name: Build precompiled NIFs
+name: Test NIF builds (no publish)
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to build (e.g., 0.1.0) - must match mix.exs'
-        required: true
-        type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build_release:
+  build_test:
     name: NIF ${{ matrix.nif }} - ${{ matrix.job.target }}${{ matrix.job.variant && format(' ({0})', matrix.job.variant) || '' }} (${{ matrix.job.os }})
     runs-on: ${{ matrix.job.os }}
     strategy:
       fail-fast: false
       matrix:
-        nif: ["2.17", "2.16", "2.15"]
+        nif: ["2.17"]
         job:
-          # Non-x86 targets (no AVX2 variant needed)
+          # Non-x86 targets
           - { target: arm-unknown-linux-gnueabihf , os: ubuntu-22.04 , use-cross: true }
           - { target: aarch64-unknown-linux-gnu   , os: ubuntu-22.04 , use-cross: true }
           - { target: aarch64-unknown-linux-musl  , os: ubuntu-22.04 , use-cross: true }
@@ -43,20 +38,6 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
 
-      - name: Set project version
-        shell: bash
-        run: echo "PROJECT_VERSION=${{ inputs.version }}" >> $GITHUB_ENV
-
-      - name: Verify version matches mix.exs
-        shell: bash
-        run: |
-          MIX_VERSION=$(sed -n 's/^  @version "\(.*\)"/\1/p' mix.exs | head -n1)
-          if [ "$MIX_VERSION" != "$PROJECT_VERSION" ]; then
-            echo "::error::Version mismatch! Input: $PROJECT_VERSION, mix.exs: $MIX_VERSION"
-            exit 1
-          fi
-          echo "Building version $PROJECT_VERSION"
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
         with:
@@ -72,7 +53,7 @@ jobs:
         uses: philss/rustler-precompiled-action@v1.1.4
         with:
           project-name: rustyjson
-          project-version: ${{ env.PROJECT_VERSION }}
+          project-version: "0.0.0-test"
           target: ${{ matrix.job.target }}
           nif-version: ${{ matrix.nif }}
           use-cross: ${{ matrix.job.use-cross }}
@@ -85,10 +66,8 @@ jobs:
           name: ${{ steps.build-crate.outputs.file-name }}
           path: ${{ steps.build-crate.outputs.file-path }}
 
-      - name: Publish to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ env.PROJECT_VERSION }}
-          draft: true
-          files: |
-            ${{ steps.build-crate.outputs.file-path }}
+      - name: Show artifact info
+        shell: bash
+        run: |
+          echo "File: ${{ steps.build-crate.outputs.file-name }}"
+          ls -lh "${{ steps.build-crate.outputs.file-path }}"

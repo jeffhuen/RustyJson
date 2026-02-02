@@ -1,4 +1,4 @@
-# Stress Benchmark: RustyJson vs Jason vs Jsonrs
+# Stress Benchmark: RustyJson vs Jason vs :json (OTP)
 #
 # Comprehensive benchmark covering all encoding/decoding workloads:
 # - Real-world JSON datasets (number-heavy, mixed, unicode)
@@ -17,7 +17,7 @@ Code.require_file("bench_structs.ex", Path.dirname(__ENV__.file))
 defmodule StressBench do
   def run do
     IO.puts("\n" <> String.duplicate("=", 60))
-    IO.puts("STRESS BENCHMARK: RustyJson vs Jason vs Jsonrs")
+    IO.puts("STRESS BENCHMARK: RustyJson vs Jason vs :json (OTP)")
     IO.puts(String.duplicate("=", 60) <> "\n")
 
     # Load real-world test data
@@ -131,7 +131,7 @@ defmodule StressBench do
       %{
         "RustyJson" => fn input -> RustyJson.decode!(input) end,
         "Jason" => fn input -> Jason.decode!(input) end,
-        "Jsonrs" => fn input -> Jsonrs.decode!(input) end
+        ":json (OTP)" => fn input -> :json.decode(input) end
       },
       Keyword.merge(bench_config, [
         inputs: %{
@@ -156,7 +156,7 @@ defmodule StressBench do
       %{
         "RustyJson" => fn input -> RustyJson.encode!(input) end,
         "Jason" => fn input -> Jason.encode!(input) end,
-        "Jsonrs" => fn input -> Jsonrs.encode!(input) end
+        ":json (OTP)" => fn input -> :json.encode(input) end
       },
       Keyword.merge(bench_config, [
         inputs: %{
@@ -177,15 +177,13 @@ defmodule StressBench do
     IO.puts("ENCODE BENCHMARKS — STRUCTS (protocol dispatch)")
     IO.puts(String.duplicate("-", 60))
 
-    # Note: Jsonrs handles structs by stripping __struct__ and encoding as
-    # plain maps (no protocol dispatch), so it's included for reference but
-    # isn't doing the same work as RustyJson/Jason.
+    # Note: :json uses the JSON.Encoder protocol for structs, same as Jason.
 
     Benchee.run(
       %{
         "RustyJson" => fn input -> RustyJson.encode!(input) end,
         "Jason" => fn input -> Jason.encode!(input) end,
-        "Jsonrs" => fn input -> Jsonrs.encode!(input) end
+        ":json (OTP)" => fn input -> :json.encode(input) end
       },
       Keyword.merge(bench_config, [
         inputs: %{
@@ -209,7 +207,7 @@ defmodule StressBench do
       %{
         "RustyJson" => fn input -> input |> RustyJson.decode!() |> RustyJson.encode!() end,
         "Jason" => fn input -> input |> Jason.decode!() |> Jason.encode!() end,
-        "Jsonrs" => fn input -> input |> Jsonrs.decode!() |> Jsonrs.encode!() end
+        ":json (OTP)" => fn input -> input |> :json.decode() |> :json.encode() end
       },
       Keyword.merge(bench_config, [
         inputs: %{

@@ -8,9 +8,16 @@ defmodule EncodeTest do
       assert IO.iodata_to_binary(RustyJson.Encode.value("test", opts)) == ~s("test")
     end
 
-    test "opts/0 defaults to :json" do
-      opts = RustyJson.Encode.opts()
-      assert IO.iodata_to_binary(RustyJson.Encode.value("test", opts)) == ~s("test")
+    test "opts/0 defaults to :json escape mode" do
+      # Verify opts/0 produces the same options as opts(:json)
+      default_opts = RustyJson.Encode.opts()
+      json_opts = RustyJson.Encode.opts(:json)
+      # Both should produce identical encoding for a string containing /
+      # (json mode does NOT escape /, html_safe does)
+      assert IO.iodata_to_binary(RustyJson.Encode.string("a/b", default_opts)) ==
+               IO.iodata_to_binary(RustyJson.Encode.string("a/b", json_opts))
+
+      refute IO.iodata_to_binary(RustyJson.Encode.string("a/b", default_opts)) =~ "\\/"
     end
 
     test "encode/2 returns ok tuple" do
@@ -43,9 +50,18 @@ defmodule EncodeTest do
     end
 
     test "float/1 encodes floats" do
-      result = RustyJson.Encode.float(3.14)
-      assert is_binary(result)
-      assert String.contains?(result, "3.14")
+      assert RustyJson.Encode.float(3.14) == "3.14"
+      assert RustyJson.Encode.float(0.0) == "0.0"
+      assert RustyJson.Encode.float(-1.23) == "-1.23"
+    end
+
+    test "float/1 precision matches short notation" do
+      # 0.1 is often tricky for binary float conversion
+      assert RustyJson.Encode.float(0.1) == "0.1"
+      # Very large float — verify it round-trips, not just that it's a binary
+      large = 1.23_456_789e20
+      encoded = RustyJson.Encode.float(large)
+      assert RustyJson.decode!(encoded) == large
     end
 
     test "list/2 encodes lists" do
@@ -106,10 +122,11 @@ defmodule EncodeTest do
     test "respects html_safe escape" do
       {escape, _} = RustyJson.Encode.opts(:html_safe)
       result = IO.iodata_to_binary(RustyJson.Encode.key("<key>", escape))
-      assert result =~ "\\u003C"
+      assert result =~ ~r/\\u003[cC]/
     end
 
-    test "encodes empty string key" do
+    test "encodes empty string key (returns escaped content without quotes)" do
+      # key/2 returns the escaped key content; wrapping quotes are added by the caller
       {escape, _} = RustyJson.Encode.opts()
       result = IO.iodata_to_binary(RustyJson.Encode.key("", escape))
       assert result == ""

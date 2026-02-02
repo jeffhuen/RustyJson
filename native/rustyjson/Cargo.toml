@@ -1,13 +1,13 @@
 [package]
 name = "rustyjson"
-version = "0.3.4"
+version = "0.3.5"
 authors = ["Jeff Huen"]
 edition = "2021"
 
 [lib]
 name = "rustyjson"
 path = "src/lib.rs"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 flate2 = "1.0"
@@ -18,6 +18,8 @@ itoa = "1.0"
 ryu = "1.0"
 lexical-core = "1.0"
 num-bigint = "0.4"
+simdutf8 = "0.1"
+smallvec = "1.13"
 mimalloc = { version = "0.1", default-features = false, optional = true }
 tikv-jemallocator = { version = "0.6", optional = true }
 snmalloc-rs = { version = "0.3", optional = true }
@@ -31,3 +33,20 @@ snmalloc = ["dep:snmalloc-rs"]
 nif_version_2_15 = ["rustler/nif_version_2_15"]
 nif_version_2_16 = ["rustler/nif_version_2_16"]
 nif_version_2_17 = ["rustler/nif_version_2_17"]
+bench = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "decode_bench"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "encode_bench"
+harness = false
+required-features = ["bench"]

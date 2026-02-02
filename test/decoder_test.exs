@@ -247,6 +247,110 @@ defmodule DecoderTest do
       assert {:error, _} = RustyJson.decode("true false")
     end
 
+    test "rejects garbage between value and comma in large object (structural index path)" do
+      # Construct JSON with a known injection point using unambiguous marker
+      valid = large_object("target", "999")
+      assert byte_size(valid) >= 256
+      assert {:ok, _} = RustyJson.decode(valid)
+
+      # Inject 'x' between value and comma: 999x,
+      # The marker "999," is unambiguous — no other value contains "999"
+      invalid = String.replace(valid, "999,", "999x,")
+      refute valid == invalid
+      assert {:error, _} = RustyJson.decode(invalid)
+
+      # Same pattern must also be rejected on small input (no structural index)
+      small = ~s({"a":1x,"b":2})
+      assert byte_size(small) < 256
+      assert {:error, _} = RustyJson.decode(small)
+    end
+
+    test "rejects garbage between value and closing brace in large object (structural index path)" do
+      # Put marker as the last key so its value is followed by }
+      padding =
+        for i <- 1..10 do
+          val = String.duplicate("v", 20)
+          ~s("padding_key_#{i}":"#{val}")
+        end
+        |> Enum.join(",")
+
+      valid = ~s({#{padding},"last":999})
+      assert byte_size(valid) >= 256
+      assert {:ok, _} = RustyJson.decode(valid)
+
+      # Inject 'x' between value and closing brace: 999x}
+      invalid = String.replace(valid, "999}", "999x}")
+      refute valid == invalid
+      assert {:error, _} = RustyJson.decode(invalid)
+
+      # Same rejection on small input
+      small = ~s({"a":1x})
+      assert {:error, _} = RustyJson.decode(small)
+    end
+
+    test "rejects garbage between key and colon in large object (structural index path)" do
+      valid = large_object("target", "999")
+      assert byte_size(valid) >= 256
+
+      # Inject 'x' between key and colon: "target"x:999
+      invalid = String.replace(valid, ~s("target":), ~s("target"x:))
+      refute valid == invalid
+      assert {:error, _} = RustyJson.decode(invalid)
+
+      # Same rejection on small input
+      small = ~s({"a"x:1})
+      assert {:error, _} = RustyJson.decode(small)
+    end
+
+    test "rejects garbage between value and comma in large array (structural index path)" do
+      valid = large_array([111, 222, 333])
+      assert byte_size(valid) >= 256
+      assert {:ok, _} = RustyJson.decode(valid)
+
+      # Inject 'x' after 222: unambiguous since no padding contains "222"
+      invalid = String.replace(valid, "222,", "222x,")
+      refute valid == invalid
+      assert {:error, _} = RustyJson.decode(invalid)
+
+      # Same rejection on small input
+      small = "[1x,2]"
+      assert {:error, _} = RustyJson.decode(small)
+    end
+
+    test "correctly parses large arrays with mixed nesting" do
+      # Arrays of objects — commas inside objects must not confuse the parser.
+      # This exercises the capacity estimator's cross-bracket depth tracking.
+      objects =
+        for i <- 1..20 do
+          ~s({"a":#{i},"b":"val#{i}","c":#{i * 10}})
+        end
+        |> Enum.join(",")
+
+      json = "[#{objects}]"
+      assert byte_size(json) >= 256
+      {:ok, result} = RustyJson.decode(json)
+      assert length(result) == 20
+      assert hd(result) == %{"a" => 1, "b" => "val1", "c" => 10}
+      assert List.last(result) == %{"a" => 20, "b" => "val20", "c" => 200}
+    end
+
+    test "correctly parses large objects with nested arrays" do
+      # Object values containing arrays — commas inside arrays must not
+      # confuse the parser.
+      entries =
+        for i <- 1..15 do
+          ~s("key#{i}":[#{i},#{i + 1},#{i + 2},#{i + 3}])
+        end
+        |> Enum.join(",")
+
+      json = "{#{entries}}"
+      assert byte_size(json) >= 256
+      {:ok, result} = RustyJson.decode(json)
+      assert map_size(result) == 15
+      assert result["key1"] == [1, 2, 3, 4]
+      assert result["key15"] == [15, 16, 17, 18]
+    end
+
     test "rejects incomplete array" do
       assert {:error, _} = RustyJson.decode("[1, 2")
     end
@@ -329,19 +433,24 @@ defmodule DecoderTest do
       assert [%{"id" => 1}, %{"id" => 2}] = result
     end
 
-    test "works with single object (no benefit but should work)" do
-      json = ~s({"id":1,"name":"test"})
-      assert %{"id" => 1, "name" => "test"} = RustyJson.decode!(json, keys: :intern)
+    test "interned keys share binary references across objects" do
+      # keys: :intern caches key Terms in the NIF so repeated keys share
+      # the same binary. Verify that the key binaries are reference-equal.
+      json = ~s([{"id":1,"name":"a"},{"id":2,"name":"b"}])
+      [obj1, obj2] = RustyJson.decode!(json, keys: :intern)
+
+      # Extract the actual key binaries from each map
+      [key1_id] = for {k, _} <- obj1, k == "id", do: k
+      [key2_id] = for {k, _} <- obj2, k == "id", do: k
+
+      # Interned keys should be the exact same binary reference.
+      # :erts_debug.same/2 checks term identity (pointer equality).
+      assert :erts_debug.same(key1_id, key2_id),
+             "expected interned keys to be the same binary reference"
     end
 
-    test "produces identical results to default mode" do
-      json = ~s([{"a":1,"b":{"c":2}},{"a":3,"b":{"c":4}}])
-      default = RustyJson.decode!(json)
-      interned = RustyJson.decode!(json, keys: :intern)
-      assert default == interned
-    end
-
-    test "handles primitives (no objects)" do
+    test "intern does not break on non-object input" do
+      # Primitives and arrays have no object keys, but :intern must not crash
       assert RustyJson.decode!("123", keys: :intern) == 123
       assert RustyJson.decode!("true", keys: :intern) == true
       assert RustyJson.decode!(~s("hello"), keys: :intern) == "hello"
@@ -442,36 +551,24 @@ defmodule DecoderTest do
   end
 
   describe "decode with keys: :copy" do
-    test "keys: :copy decodes like :strings" do
+    test "keys: :copy is accepted and decodes correctly" do
+      # :copy is a Jason-compatible alias for :strings. Both produce string keys.
+      # This test guards against the option being accidentally rejected.
       json = ~s({"name":"Alice","age":30})
-      copy = RustyJson.decode!(json, keys: :copy)
-      strings = RustyJson.decode!(json, keys: :strings)
-      assert copy == strings
-    end
-
-    test "keys: :copy with nested objects" do
-      json = ~s({"user":{"name":"Alice"}})
       result = RustyJson.decode!(json, keys: :copy)
-      assert result == %{"user" => %{"name" => "Alice"}}
+      assert result == %{"name" => "Alice", "age" => 30}
     end
   end
 
   describe "decode with strings: option (Gap 2)" do
-    test "strings: :copy decodes correctly" do
-      json = ~s({"key":"value"})
-      assert RustyJson.decode!(json, strings: :copy) == %{"key" => "value"}
-    end
-
-    test "strings: :reference decodes correctly" do
-      json = ~s({"key":"value"})
-      assert RustyJson.decode!(json, strings: :reference) == %{"key" => "value"}
-    end
-
-    test "both modes produce identical results" do
-      json = ~s([{"a":"hello","b":"world"},{"a":"foo","b":"bar"}])
+    test "strings: :copy and :reference are both accepted and decode correctly" do
+      # RustyJson always copies from the NIF, so both options behave identically.
+      # This test guards against either option being accidentally rejected.
+      json = ~s({"key":"value","nested":{"a":"b"}})
       copy = RustyJson.decode!(json, strings: :copy)
       ref = RustyJson.decode!(json, strings: :reference)
       assert copy == ref
+      assert copy == %{"key" => "value", "nested" => %{"a" => "b"}}
     end
 
     test "invalid strings option raises" do
@@ -524,45 +621,41 @@ defmodule DecoderTest do
   end
 
   describe "DecodeError struct fields (Gap 8)" do
-    test "DecodeError has position field" do
-      assert_raise RustyJson.DecodeError, fn ->
-        RustyJson.decode!("invalid")
-      end
+    test "DecodeError has position and data fields for start-of-input errors" do
+      error =
+        assert_raise RustyJson.DecodeError, fn ->
+          RustyJson.decode!("invalid")
+        end
 
-      try do
-        RustyJson.decode!("invalid")
-      rescue
-        e in RustyJson.DecodeError ->
-          assert e.position == 0
-          assert e.data == "invalid"
-          assert is_binary(e.token)
-      end
+      assert error.position == 0
+      assert error.data == "invalid"
+      assert is_binary(error.token)
     end
 
     test "DecodeError position for mid-input errors" do
-      try do
-        RustyJson.decode!(~s({"a": invalid}))
-      rescue
-        e in RustyJson.DecodeError ->
-          assert is_integer(e.position)
-          assert e.position > 0
-          assert e.data == ~s({"a": invalid})
-      end
+      error =
+        assert_raise RustyJson.DecodeError, fn ->
+          RustyJson.decode!(~s({"a": invalid}))
+        end
+
+      assert is_integer(error.position)
+      assert error.position > 0
+      assert error.data == ~s({"a": invalid})
     end
 
     test "DecodeError has token field" do
-      try do
-        RustyJson.decode!(~s([1, 2, invalid]))
-      rescue
-        e in RustyJson.DecodeError ->
-          assert is_binary(e.token)
-      end
+      error =
+        assert_raise RustyJson.DecodeError, fn ->
+          RustyJson.decode!(~s([1, 2, invalid]))
+        end
+
+      assert is_binary(error.token)
     end
 
-    test "decode/2 returns DecodeError struct" do
+    test "decode/2 returns DecodeError struct with message" do
       assert {:error, %RustyJson.DecodeError{} = error} = RustyJson.decode("invalid")
       assert is_binary(error.message)
-      assert error.message =~ "position"
+      assert is_integer(error.position)
     end
   end
 
@@ -643,5 +736,27 @@ defmodule DecoderTest do
       json = ~s(1.23456789012345)
       assert {:ok, _} = RustyJson.decode(json, decoding_integer_digit_limit: 5)
     end
+  end
+
+  # -- Test helpers --
+
+  # Build a valid JSON object >= 256 bytes with a known marker key/value at the front
+  # (followed by a comma), so garbage can be injected at an unambiguous location.
+  defp large_object(marker_key, marker_value) do
+    padding =
+      for i <- 1..10 do
+        val = String.duplicate("v", 20)
+        ~s("padding_key_#{i}":"#{val}")
+      end
+      |> Enum.join(",")
+
+    ~s({"#{marker_key}":#{marker_value},#{padding}})
+  end
+
+  # Build a valid JSON array >= 256 bytes with padding strings followed by the given values.
+  defp large_array(values) do
+    padding = Enum.map(1..10, fn i -> ~s("padding_#{String.duplicate("x", 20)}_#{i}") end)
+    all = padding ++ Enum.map(values, &to_string/1)
+    "[#{Enum.join(all, ",")}]"
   end
 end

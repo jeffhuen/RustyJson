@@ -224,6 +224,7 @@ defmodule RustyJson do
           | {:protocol, boolean()}
           | {:lean, boolean()}
           | {:maps, :naive | :strict}
+          | {:sort_keys, boolean()}
           | {:scheduler, :auto | :normal | :dirty}
 
   @typedoc """
@@ -322,12 +323,50 @@ defmodule RustyJson do
     System.get_env("FORCE_RUSTYJSON_BUILD") in ["1", "true"] or
       Application.compile_env(:rustler_precompiled, :force_build, [])[:rustyjson] == true
 
+  # Detect AVX2 support at compile time for x86_64 targets.
+  # When available, downloads a variant built with -C target-cpu=x86-64-v3
+  # which enables 32-byte SIMD paths. Falls back to baseline SSE2 (16-byte).
+  avx2_detect = fn _config ->
+    try do
+      cond do
+        File.exists?("/proc/cpuinfo") ->
+          case File.read("/proc/cpuinfo") do
+            {:ok, info} -> String.contains?(info, "avx2")
+            _ -> false
+          end
+
+        match?({:win32, _}, :os.type()) ->
+          # On Windows, assume AVX2 for x86_64 — practically all x86_64 Windows
+          # machines in 2024+ have Haswell or newer. Worst case: falls back to
+          # baseline binary if the variant download fails.
+          true
+
+        true ->
+          # macOS x86_64: check via sysctl
+          case System.cmd("sysctl", ["-n", "hw.optional.avx2_0"], stderr_to_stdout: true) do
+            {"1\n", 0} -> true
+            _ -> false
+          end
+      end
+    rescue
+      _ -> false
+    end
+  end
+
+  x86_64_variants = [avx2: avx2_detect]
+
   use RustlerPrecompiled,
     otp_app: :rustyjson,
     base_url: "#{source_url}/releases/download/v#{version}",
     force_build: force_build?,
     nif_versions: ["2.15", "2.16", "2.17"],
     targets: RustlerPrecompiled.Config.default_targets(),
+    variants: %{
+      "x86_64-unknown-linux-gnu" => x86_64_variants,
+      "x86_64-apple-darwin" => x86_64_variants,
+      "x86_64-pc-windows-msvc" => x86_64_variants,
+      "x86_64-pc-windows-gnu" => x86_64_variants
+    },
     version: version
 
   # NIF stubs - these are replaced by Rustler at runtime
@@ -386,6 +425,11 @@ defmodule RustyJson do
 
   * `:maps` - Key uniqueness mode. `:naive` (default) allows duplicate serialized
     keys, `:strict` errors on duplicate keys (e.g. atom `:a` and string `"a"`).
+
+  * `:sort_keys` - Sort map keys lexicographically in output. Default: `false`.
+    JSON objects are unordered per RFC 8259. Enable for deterministic output
+    (useful for snapshot tests, caching, or diffing). Note: Jason always sorts
+    keys; RustyJson does not by default for performance.
 
   ## Examples
 
@@ -485,6 +529,7 @@ defmodule RustyJson do
     {use_protocol, opts} = Keyword.pop(opts, :protocol, true)
     {lean, opts} = Keyword.pop(opts, :lean, false)
     {maps_mode, opts} = Keyword.pop(opts, :maps, :naive)
+    {sort_keys, opts} = Keyword.pop(opts, :sort_keys, false)
     {scheduler, opts} = Keyword.pop(opts, :scheduler, :auto)
     validate_option!(maps_mode, [:naive, :strict], :maps)
     validate_option!(scheduler, [:auto, :normal, :dirty], :scheduler)
@@ -526,15 +571,20 @@ defmodule RustyJson do
     processed =
       resolve_protocol_fragments(processed, input, use_protocol, encoder_opts)
 
+    encode_opts = %{
+      indent: indent,
+      compression: compression,
+      lean: lean,
+      escape: escape,
+      strict_keys: strict_keys,
+      sort_keys: sort_keys,
+      pretty_opts: pretty_opts,
+      scheduler: scheduler
+    }
+
     encode_to_nif(
       processed,
-      indent,
-      compression,
-      lean,
-      escape,
-      strict_keys,
-      pretty_opts,
-      scheduler
+      encode_opts
     )
   rescue
     e in [ErlangError] ->
@@ -571,39 +621,25 @@ defmodule RustyJson do
   # the NIF walk the iodata tree via write_iodata.
   defp encode_to_nif(
          %RustyJson.Fragment{encode: encode},
-         nil = _indent,
-         {:none, _} = _compression,
-         _lean,
-         _escape,
-         _strict_keys,
-         _pretty_opts,
-         _scheduler
+         %{indent: nil, compression: {:none, _}}
        )
        when not is_function(encode, 1) do
     IO.iodata_to_binary(encode)
   end
 
-  defp encode_to_nif(
-         processed,
-         indent,
-         compression,
-         lean,
-         escape,
-         strict_keys,
-         pretty_opts,
-         scheduler
-       ) do
+  defp encode_to_nif(processed, opts) do
     nif_opts = %{
-      indent: indent,
-      compression: compression,
-      lean: lean == true,
-      escape: escape,
-      strict_keys: strict_keys,
-      pretty_opts: pretty_opts
+      indent: opts.indent,
+      compression: opts.compression,
+      lean: opts.lean == true,
+      escape: opts.escape,
+      strict_keys: opts.strict_keys,
+      sort_keys: opts.sort_keys == true,
+      pretty_opts: opts.pretty_opts
     }
 
-    uses_compression = match?({:gzip, _}, compression)
-    use_dirty = scheduler == :dirty or (scheduler == :auto and uses_compression)
+    uses_compression = match?({:gzip, _}, opts.compression)
+    use_dirty = opts.scheduler == :dirty or (opts.scheduler == :auto and uses_compression)
 
     if use_dirty do
       nif_encode_direct_dirty(processed, nif_opts)

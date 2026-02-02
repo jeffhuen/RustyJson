@@ -5,12 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-01-31
+
+### Added
+
+- **`sort_keys` encode option** — `sort_keys: true` sorts map keys lexicographically in the JSON output. Useful for snapshot tests, caching, and diffing. Sorting is recursive (nested maps are also sorted). Default: `false` — JSON objects are unordered per RFC 8259, and RustyJson preserves this semantics by default. No overhead when disabled.
+- **AVX2 precompiled binary variants** — Each x86_64 target now ships two precompiled binaries: a baseline (SSE2, 16-byte SIMD) and an AVX2 variant optimized for Haswell+ CPUs (32-byte SIMD, built with `-C target-cpu=x86-64-v3`). At compile time, `RustlerPrecompiled` detects AVX2 support on the host CPU and downloads the optimal variant automatically. Total precompiled artifacts: 42 (30 baseline + 12 AVX2 variants across 4 x86_64 targets × 3 NIF versions). The musl target is excluded from AVX2 variants due to cross-compilation limitations.
+
+### Changed
+
+- **Portable SIMD (`std::simd`)** — Replaced all architecture-specific SIMD intrinsics (NEON, AVX2, SSE2) with Rust's portable SIMD. One codepath per pattern, zero `unsafe`, no `#[cfg(target_arch)]` branching. The compiler generates optimal instructions for each target automatically. Only uses `std::simd` APIs on the stabilization track (comparisons, masks, splat/from_slice); blocked APIs (`simd_swizzle!`, `scatter/gather`, etc.) are explicitly avoided.
+- **Zero `unsafe` code** — Eliminated all `unsafe` blocks. SIMD is now safe via `std::simd`, and `make_subbinary_unchecked` was replaced with the safe `make_subbinary`. The entire codebase is 100% safe Rust.
+- **Nightly Rust toolchain** — Required for `#![feature(portable_simd)]`. Pinned via `rust-toolchain.toml`.
+
+### Performance
+
+- **SIMD-accelerated everything** — Hardware acceleration across the entire pipeline: string scanning (decode), escape scanning (encode), structural character indexing, and whitespace skipping. 32-byte wide paths on AVX2, 16-byte on all other targets, with scalar tails.
+- **Same-shape object detection** — Reuses key sets for arrays of objects with identical schemas, providing 2-6x speedup on typical API responses.
+- **Direct NIF binary writes** — Encoded JSON is written once directly into BEAM-managed memory, eliminating intermediate buffer copies.
+- **Fast-path integer parsing** — Homogeneous integer arrays use a tighter, branchless loop that bypasses general-purpose parsing for small numbers.
+- **Allocation reduction** — Switched to `SmallVec` for formatting context, interned struct field atoms, and pre-allocated URI buffers to minimize heap pressure.
+- **Static error messages** — Replaced dynamic string allocation with static `Cow` types for common parsing errors.
+
+### Fixed
+
+- **Test suite cleanup** — Removed redundant/flawed assertions and added explicit regression tests for SIMD boundary safety and structural index validation.
+
 ## [0.3.4] - 2026-01-30
 
 ### Performance
 
 - **Decode fast path** — `decode!/1` bypasses option parsing for the common no-options call (Phoenix, Plug, etc.). No API changes.
-- **SIMD string scanning** — String parsing uses AVX2 (32 bytes/iter, x86_64 Haswell+), SSE2 (16 bytes/iter, all x86_64), or NEON (16 bytes/iter, aarch64) with runtime detection. Combined with zero-copy sub-binary references for non-escaped strings. In local benchmarks, 2-4x faster on string-heavy payloads vs v0.3.3, 15-30% faster on small payloads. Results may vary by hardware and payload shape.
+- **SIMD string scanning** — String parsing uses portable SIMD (32 bytes/iter on AVX2, 16 bytes/iter elsewhere) combined with zero-copy sub-binary references for non-escaped strings. In local benchmarks, 2-4x faster on string-heavy payloads vs v0.3.3, 15-30% faster on small payloads. Results may vary by hardware and payload shape.
 
 ## [0.3.3] - 2026-01-30
 
@@ -290,7 +316,7 @@ No regressions. Relative speedup vs Jason is unchanged from v0.2.0.
 
 #### Safety
 
-- **Zero `unsafe` code** in RustyJson source (all unsafe is in audited dependencies)
+- Zero `unsafe` code — all SIMD uses portable `std::simd` (safe), no raw intrinsics
 - 128-level nesting depth limit per RFC 7159
 - Safe Rust guarantees memory safety at compile time
 
@@ -301,8 +327,9 @@ No regressions. Relative speedup vs Jason is unchanged from v0.2.0.
 - Uses [itoa](https://github.com/dtolnay/itoa) and [ryu](https://github.com/dtolnay/ryu) for fast number formatting
 - Uses [lexical-core](https://github.com/Alexhuszagh/rust-lexical) for number parsing
 - Zero-copy string handling in decoder for unescaped strings
-- 256-byte lookup table for O(1) escape detection
+- SIMD-accelerated escape scanning via portable `std::simd`
 
+[0.3.5]: https://github.com/jeffhuen/rustyjson/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/jeffhuen/rustyjson/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/jeffhuen/rustyjson/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/jeffhuen/rustyjson/compare/v0.3.1...v0.3.2

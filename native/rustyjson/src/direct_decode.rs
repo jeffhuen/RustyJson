@@ -1,35 +1,208 @@
 use crate::atoms;
 use num_bigint::BigInt;
 use rustler::{types::atom, Binary, Encoder, Env, NewBinary, Term};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
+
+/// Error type for decode operations: static string message + byte position.
+pub type DecodeError = (Cow<'static, str>, usize);
 
 /// Maximum nesting depth to prevent stack overflow
 const MAX_DEPTH: usize = 128;
 
-/// AVX2 string scanner: skip 32 plain bytes per iteration.
-/// Must be called only after `is_x86_feature_detected!("avx2")`.
-/// The `#[target_feature]` attribute tells LLVM to emit AVX2 instructions
-/// for this function regardless of the global target CPU.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn simd_skip_string_avx2(input: &[u8], pos: &mut usize) {
-    use std::arch::x86_64::*;
-    let quote = _mm256_set1_epi8(b'"' as i8);
-    let backslash = _mm256_set1_epi8(b'\\' as i8);
-    let bound = _mm256_set1_epi8(0x1F);
+// ============================================================================
+// Structural Index - pre-scan for structural JSON characters
+// ============================================================================
 
-    while *pos + 32 <= input.len() {
-        let chunk = _mm256_loadu_si256(input.as_ptr().add(*pos) as *const __m256i);
-        let eq_quote = _mm256_cmpeq_epi8(chunk, quote);
-        let eq_backslash = _mm256_cmpeq_epi8(chunk, backslash);
-        let is_control = _mm256_cmpeq_epi8(_mm256_min_epu8(chunk, bound), chunk);
-        let combined = _mm256_or_si256(_mm256_or_si256(eq_quote, eq_backslash), is_control);
-        if _mm256_testz_si256(combined, combined) == 1 {
-            *pos += 32;
-        } else {
-            break;
+/// Minimum input size to build a structural index.
+/// Below this threshold, byte-at-a-time whitespace skipping is faster.
+const STRUCTURAL_INDEX_THRESHOLD: usize = 256;
+
+/// Pre-computed index of structural character positions ({, }, [, ], :, ,)
+/// outside of strings. The parser jumps directly to these positions instead
+/// of scanning whitespace byte-by-byte.
+struct StructuralIndex {
+    positions: Vec<u32>, // byte offsets of structural chars, in order
+    cursor: usize,       // next position to consume
+}
+
+/// Maximum structural positions to scan when counting container elements.
+/// Keeps the scan O(1)-bounded; falls back to heuristic if exceeded.
+const STRUCTURAL_SCAN_CAP: usize = 512;
+
+impl StructuralIndex {
+    /// Peek at the next structural position without consuming it.
+    #[inline(always)]
+    fn peek(&self) -> Option<u32> {
+        self.positions.get(self.cursor).copied()
+    }
+
+    /// Advance the cursor past the current structural position.
+    #[inline(always)]
+    fn advance(&mut self) {
+        self.cursor += 1;
+    }
+
+    /// Count elements in a container by scanning structural positions forward.
+    /// Starts from the current cursor (which should be past the opening bracket
+    /// and any already-consumed commas). Tracks nesting depth across ALL bracket
+    /// types (`{`, `}`, `[`, `]`) to correctly skip commas inside nested
+    /// containers, then returns `Some(comma_count + 1)` when the matching
+    /// `close` bracket is found at depth 0.
+    /// Returns `None` if the close bracket is not found within
+    /// STRUCTURAL_SCAN_CAP positions.
+    fn count_elements_until_close(&self, input: &[u8], close: u8) -> Option<usize> {
+        let mut commas = 0usize;
+        let mut depth = 0usize;
+        let limit = (self.cursor + STRUCTURAL_SCAN_CAP).min(self.positions.len());
+        let mut i = self.cursor;
+        while i < limit {
+            let b = input[self.positions[i] as usize];
+            match b {
+                b'{' | b'[' => depth += 1,
+                b'}' | b']' => {
+                    if depth == 0 {
+                        if b == close {
+                            return Some(commas + 1);
+                        }
+                        // Mismatched bracket at depth 0 — bail out
+                        return None;
+                    }
+                    depth -= 1;
+                }
+                b',' if depth == 0 => commas += 1,
+                _ => {}
+            }
+            i += 1;
         }
+        None // close bracket not found within cap
+    }
+}
+
+/// Build a structural index for the input, identifying positions of all
+/// structural JSON characters ({, }, [, ], :, ,) that are outside strings.
+///
+/// Uses SIMD to classify chunks and a scalar state machine to track
+/// in-string state and escape sequences.
+fn build_structural_index(input: &[u8]) -> StructuralIndex {
+    // Pre-allocate at ~10% of input size (typical structural density)
+    let estimated = input.len() / 10;
+    let mut positions = Vec::with_capacity(estimated.max(16));
+    let mut in_string = false;
+    let mut prev_escape = false;
+    let mut pos = 0;
+
+    // Process SIMD-sized chunks: skip chunks with no interesting bytes.
+    // On AVX2 targets, process 32 bytes at a time first, then 16-byte remainder.
+    #[cfg(target_feature = "avx2")]
+    while pos + 32 <= input.len() {
+        if !crate::simd_utils::chunk_has_structural_wide(input, pos) && !prev_escape {
+            pos += 32;
+            continue;
+        }
+
+        // Slow path: process byte-by-byte with state machine
+        let end = pos + 32;
+        while pos < end {
+            let b = input[pos];
+            if prev_escape {
+                prev_escape = false;
+                pos += 1;
+                continue;
+            }
+            if b == b'\\' && in_string {
+                prev_escape = true;
+                pos += 1;
+                continue;
+            }
+            if b == b'"' {
+                in_string = !in_string;
+                pos += 1;
+                continue;
+            }
+            if !in_string {
+                match b {
+                    b'{' | b'}' | b'[' | b']' | b':' | b',' => {
+                        positions.push(pos as u32);
+                    }
+                    _ => {}
+                }
+            }
+            pos += 1;
+        }
+    }
+
+    // 16-byte pass (handles remainder on AVX2, or full pass on other targets)
+    while pos + crate::simd_utils::CHUNK <= input.len() {
+        if !crate::simd_utils::chunk_has_structural(input, pos) && !prev_escape {
+            pos += crate::simd_utils::CHUNK;
+            continue;
+        }
+
+        // Slow path: process byte-by-byte with state machine
+        let end = pos + crate::simd_utils::CHUNK;
+        while pos < end {
+            let b = input[pos];
+            if prev_escape {
+                prev_escape = false;
+                pos += 1;
+                continue;
+            }
+            if b == b'\\' && in_string {
+                prev_escape = true;
+                pos += 1;
+                continue;
+            }
+            if b == b'"' {
+                in_string = !in_string;
+                pos += 1;
+                continue;
+            }
+            if !in_string {
+                match b {
+                    b'{' | b'}' | b'[' | b']' | b':' | b',' => {
+                        positions.push(pos as u32);
+                    }
+                    _ => {}
+                }
+            }
+            pos += 1;
+        }
+    }
+
+    // Scalar tail for remaining bytes (all architectures)
+    while pos < input.len() {
+        let b = input[pos];
+        if prev_escape {
+            prev_escape = false;
+            pos += 1;
+            continue;
+        }
+        if b == b'\\' && in_string {
+            prev_escape = true;
+            pos += 1;
+            continue;
+        }
+        if b == b'"' {
+            in_string = !in_string;
+            pos += 1;
+            continue;
+        }
+        if !in_string {
+            match b {
+                b'{' | b'}' | b'[' | b']' | b':' | b',' => {
+                    positions.push(pos as u32);
+                }
+                _ => {}
+            }
+        }
+        pos += 1;
+    }
+
+    StructuralIndex {
+        positions,
+        cursor: 0,
     }
 }
 
@@ -135,6 +308,15 @@ impl BuildHasher for FnvBuildHasher {
 
 type FastHashMap<K, V> = HashMap<K, V, FnvBuildHasher>;
 
+/// Cached key shape from the first object in an array.
+/// When an array contains multiple objects with the same keys in the same order,
+/// we can reuse the key Terms from the first object instead of rebuilding them.
+struct KeyShape<'a, 'b> {
+    raw_keys: Vec<&'b [u8]>,  // raw byte slices for comparison
+    key_terms: Vec<Term<'a>>, // reusable key Terms
+    is_flat: bool,            // true if first value was a scalar (no nested containers)
+}
+
 /// Direct JSON-to-Term parser - builds Erlang terms during parsing without intermediate representation
 pub struct DirectParser<'a, 'b> {
     input: &'b [u8],
@@ -149,6 +331,9 @@ pub struct DirectParser<'a, 'b> {
     key_cache: Option<FastHashMap<&'b [u8], Term<'a>>>,
     /// Decode options controlling behavior
     opts: DecodeOptions,
+    /// Optional structural index for fast whitespace skipping.
+    /// Only built for inputs >= STRUCTURAL_INDEX_THRESHOLD bytes.
+    structural_index: Option<StructuralIndex>,
 }
 
 impl<'a, 'b> DirectParser<'a, 'b> {
@@ -167,6 +352,11 @@ impl<'a, 'b> DirectParser<'a, 'b> {
         } else {
             None
         };
+        let structural_index = if input.len() >= STRUCTURAL_INDEX_THRESHOLD {
+            Some(build_structural_index(input))
+        } else {
+            None
+        };
         Self {
             input,
             pos: 0,
@@ -175,16 +365,17 @@ impl<'a, 'b> DirectParser<'a, 'b> {
             input_binary,
             key_cache,
             opts,
+            structural_index,
         }
     }
 
     #[inline]
-    pub fn parse(mut self) -> Result<Term<'a>, (String, usize)> {
+    pub fn parse(mut self) -> Result<Term<'a>, DecodeError> {
         self.skip_whitespace();
         let term = self.parse_value()?;
         self.skip_whitespace();
         if self.pos < self.input.len() {
-            return Err(("Unexpected trailing characters".to_string(), self.pos));
+            return Err((Cow::Borrowed("Unexpected trailing characters"), self.pos));
         }
         Ok(term)
     }
@@ -201,6 +392,16 @@ impl<'a, 'b> DirectParser<'a, 'b> {
 
     #[inline(always)]
     fn skip_whitespace(&mut self) {
+        // SIMD fast path: skip 16 bytes of whitespace at a time
+        while self.pos + crate::simd_utils::CHUNK <= self.input.len() {
+            if crate::simd_utils::chunk_all_whitespace(self.input, self.pos) {
+                self.pos += crate::simd_utils::CHUNK;
+            } else {
+                break;
+            }
+        }
+
+        // Scalar tail
         while self.pos < self.input.len() {
             match self.input[self.pos] {
                 b' ' | b'\t' | b'\n' | b'\r' => self.pos += 1,
@@ -209,13 +410,100 @@ impl<'a, 'b> DirectParser<'a, 'b> {
         }
     }
 
+    /// Jump self.pos to the next structural character position.
+    /// Validates that all bytes between the current position and the structural
+    /// position are whitespace. If any non-whitespace byte is found in the gap,
+    /// falls back to skip_whitespace() so the caller's match on peek() will
+    /// detect the unexpected byte and produce an error.
+    /// Falls back to skip_whitespace() when no index is available.
     #[inline(always)]
-    fn err(&self, msg: &str) -> (String, usize) {
-        (msg.to_string(), self.pos)
+    fn advance_to_structural(&mut self) {
+        if let Some(ref idx) = self.structural_index {
+            if let Some(next_pos) = idx.peek() {
+                let next = next_pos as usize;
+                // Validate that all bytes in the gap are whitespace.
+                // In valid JSON, only whitespace can appear between tokens
+                // and structural characters. If non-whitespace is present,
+                // fall through to skip_whitespace() which will stop at the
+                // offending byte, causing the caller to error.
+                if next >= self.pos {
+                    let gap = &self.input[self.pos..next];
+                    if gap
+                        .iter()
+                        .all(|&b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
+                    {
+                        self.pos = next;
+                        return;
+                    }
+                }
+            }
+        }
+        self.skip_whitespace();
+    }
+
+    /// Advance past current structural char, incrementing both pos and cursor.
+    #[inline(always)]
+    fn consume_structural(&mut self) {
+        self.pos += 1;
+        if let Some(ref mut idx) = self.structural_index {
+            idx.advance();
+        }
+    }
+
+    /// Fused consume_structural + skip_whitespace: advance past the current
+    /// structural char and skip any following whitespace in a single call.
+    #[inline(always)]
+    fn consume_structural_and_skip_ws(&mut self) {
+        self.pos += 1;
+        if let Some(ref mut idx) = self.structural_index {
+            idx.advance();
+        }
+        self.skip_whitespace();
+    }
+
+    /// Estimate container capacity using the structural index when available.
+    /// Falls back to the heuristic `(remaining / divisor).clamp(1, max)` when
+    /// the index is absent or the close bracket is not found within the scan cap.
+    #[inline]
+    fn estimate_container_capacity(&self, close: u8, divisor: usize, max: usize) -> usize {
+        if let Some(ref idx) = self.structural_index {
+            if let Some(count) = idx.count_elements_until_close(self.input, close) {
+                return count;
+            }
+        }
+        let remaining = self.input.len() - self.pos;
+        let estimated = (remaining / divisor).clamp(1, max);
+        if self.depth > 1 {
+            estimated.min(8)
+        } else {
+            estimated
+        }
+    }
+
+    #[inline(always)]
+    fn err(&self, msg: &'static str) -> DecodeError {
+        (Cow::Borrowed(msg), self.pos)
+    }
+
+    /// Optimized value parser for flat objects (no nested containers).
+    /// Routes numbers through `parse_number_fast` (direct indexing, inline
+    /// small-int parse) and avoids the container arms entirely. Falls back
+    /// to `parse_value` if a container opener is encountered.
+    #[inline(always)]
+    fn parse_value_flat(&mut self) -> Result<Term<'a>, DecodeError> {
+        match self.peek() {
+            Some(b'"') => self.parse_string(),
+            Some(b'0'..=b'9') | Some(b'-') => self.parse_number_fast(),
+            Some(b't') => self.parse_true(),
+            Some(b'f') => self.parse_false(),
+            Some(b'n') => self.parse_null(),
+            // Container or unexpected — fall through to full dispatch
+            _ => self.parse_value(),
+        }
     }
 
     #[inline]
-    fn parse_value(&mut self) -> Result<Term<'a>, (String, usize)> {
+    fn parse_value(&mut self) -> Result<Term<'a>, DecodeError> {
         match self.peek() {
             Some(b'n') => self.parse_null(),
             Some(b't') => self.parse_true(),
@@ -230,7 +518,7 @@ impl<'a, 'b> DirectParser<'a, 'b> {
     }
 
     #[inline(always)]
-    fn parse_null(&mut self) -> Result<Term<'a>, (String, usize)> {
+    fn parse_null(&mut self) -> Result<Term<'a>, DecodeError> {
         if self.input[self.pos..].starts_with(b"null") {
             self.pos += 4;
             Ok(atom::nil().encode(self.env))
@@ -240,7 +528,7 @@ impl<'a, 'b> DirectParser<'a, 'b> {
     }
 
     #[inline(always)]
-    fn parse_true(&mut self) -> Result<Term<'a>, (String, usize)> {
+    fn parse_true(&mut self) -> Result<Term<'a>, DecodeError> {
         if self.input[self.pos..].starts_with(b"true") {
             self.pos += 4;
             Ok(true.encode(self.env))
@@ -250,7 +538,7 @@ impl<'a, 'b> DirectParser<'a, 'b> {
     }
 
     #[inline(always)]
-    fn parse_false(&mut self) -> Result<Term<'a>, (String, usize)> {
+    fn parse_false(&mut self) -> Result<Term<'a>, DecodeError> {
         if self.input[self.pos..].starts_with(b"false") {
             self.pos += 5;
             Ok(false.encode(self.env))
@@ -271,93 +559,15 @@ impl<'a, 'b> DirectParser<'a, 'b> {
     ///   Only escaped strings (containing `\"`, `\\`, `\n`, `\uXXXX`, etc.)
     ///   allocate a new binary.
     #[inline]
-    fn parse_string_impl(&mut self, for_key: bool) -> Result<Term<'a>, (String, usize)> {
+    fn parse_string_impl(&mut self, for_key: bool) -> Result<Term<'a>, DecodeError> {
         let string_start = self.pos;
         self.advance(); // Skip opening quote
         let start = self.pos;
         let mut has_escape = false;
 
-        // SIMD string scanning: skip plain bytes in bulk.
-        //   - aarch64: NEON 16 bytes/iter (baseline on all ARM64)
-        //   - x86_64:  AVX2 32 bytes/iter (runtime-detected), SSE2 16 bytes/iter fallback
-        //   - other:   8-byte scalar fallback
+        // SIMD string scanning: skip plain bytes in bulk (portable SIMD).
         loop {
-            #[cfg(target_arch = "aarch64")]
-            {
-                use std::arch::aarch64::*;
-                unsafe {
-                    let quote = vdupq_n_u8(b'"');
-                    let backslash = vdupq_n_u8(b'\\');
-                    let control_bound = vdupq_n_u8(0x20);
-
-                    while self.pos + 16 <= self.input.len() {
-                        let chunk = vld1q_u8(self.input.as_ptr().add(self.pos));
-                        let eq_quote = vceqq_u8(chunk, quote);
-                        let eq_backslash = vceqq_u8(chunk, backslash);
-                        let is_control = vcltq_u8(chunk, control_bound);
-                        let combined = vorrq_u8(vorrq_u8(eq_quote, eq_backslash), is_control);
-                        if vmaxvq_u8(combined) == 0 {
-                            self.pos += 16;
-                        } else {
-                            break;
-                        }
-                    }
-                }
-            }
-
-            #[cfg(target_arch = "x86_64")]
-            {
-                use std::arch::x86_64::*;
-
-                // AVX2: 32 bytes/iter on Haswell+ (2013+), runtime-detected
-                if is_x86_feature_detected!("avx2") {
-                    unsafe { simd_skip_string_avx2(self.input, &mut self.pos) };
-                }
-
-                // SSE2 cleanup: handle remaining 16-byte chunks (also used
-                // as primary path on pre-Haswell x86_64 where AVX2 is absent)
-                unsafe {
-                    let quote = _mm_set1_epi8(b'"' as i8);
-                    let backslash = _mm_set1_epi8(b'\\' as i8);
-                    let bound = _mm_set1_epi8(0x1F);
-
-                    while self.pos + 16 <= self.input.len() {
-                        let chunk =
-                            _mm_loadu_si128(self.input.as_ptr().add(self.pos) as *const __m128i);
-                        let eq_quote = _mm_cmpeq_epi8(chunk, quote);
-                        let eq_backslash = _mm_cmpeq_epi8(chunk, backslash);
-                        let is_control = _mm_cmpeq_epi8(_mm_min_epu8(chunk, bound), chunk);
-                        let combined =
-                            _mm_or_si128(_mm_or_si128(eq_quote, eq_backslash), is_control);
-                        if _mm_movemask_epi8(combined) == 0 {
-                            self.pos += 16;
-                        } else {
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // Scalar fallback for other architectures (riscv64, etc.)
-            #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-            {
-                while self.pos + 8 <= self.input.len() {
-                    let chunk = &self.input[self.pos..self.pos + 8];
-                    let mut all_plain = true;
-                    for i in 0..8 {
-                        let b = chunk[i];
-                        if b < 0x20 || b == b'"' || b == b'\\' {
-                            all_plain = false;
-                            break;
-                        }
-                    }
-                    if all_plain {
-                        self.pos += 8;
-                    } else {
-                        break;
-                    }
-                }
-            }
+            crate::simd_utils::skip_plain_string_bytes(self.input, &mut self.pos);
 
             // Byte-at-a-time for remainder or when a special byte is nearby
             match self.peek() {
@@ -371,8 +581,10 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                         let decoded = self
                             .decode_escaped_string(start, end)
                             .map_err(|msg| (msg, string_start))?;
-                        if self.opts.validate_strings && std::str::from_utf8(&decoded).is_err() {
-                            return Err(("Invalid UTF-8 in string".to_string(), string_start));
+                        if self.opts.validate_strings
+                            && simdutf8::basic::from_utf8(&decoded).is_err()
+                        {
+                            return Err((Cow::Borrowed("Invalid UTF-8 in string"), string_start));
                         }
                         return Ok(encode_binary(self.env, &decoded));
                     }
@@ -380,8 +592,9 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                     let str_bytes = &self.input[start..end];
 
                     // Optional UTF-8 validation for non-escaped strings
-                    if self.opts.validate_strings && std::str::from_utf8(str_bytes).is_err() {
-                        return Err(("Invalid UTF-8 in string".to_string(), string_start));
+                    if self.opts.validate_strings && simdutf8::basic::from_utf8(str_bytes).is_err()
+                    {
+                        return Err((Cow::Borrowed("Invalid UTF-8 in string"), string_start));
                     }
 
                     // Key interning: check cache if enabled and parsing a key.
@@ -404,10 +617,10 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                     // zero-copy sub-binary avoids allocation + memcpy.
                     let len = end - start;
                     if len >= 64 {
-                        return Ok(unsafe {
-                            self.input_binary.make_subbinary_unchecked(start, len)
+                        if let Ok(sub) = self.input_binary.make_subbinary(start, len) {
+                            return Ok(sub.to_term(self.env));
                         }
-                        .to_term(self.env));
+                        return Ok(encode_binary(self.env, str_bytes));
                     } else {
                         return Ok(encode_binary(self.env, str_bytes));
                     }
@@ -425,7 +638,7 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                 }
                 Some(_) => self.advance(),
                 None => {
-                    return Err(("Unterminated string".to_string(), string_start));
+                    return Err((Cow::Borrowed("Unterminated string"), string_start));
                 }
             }
         }
@@ -433,18 +646,58 @@ impl<'a, 'b> DirectParser<'a, 'b> {
 
     /// Parse a string value (not interned)
     #[inline]
-    fn parse_string(&mut self) -> Result<Term<'a>, (String, usize)> {
+    fn parse_string(&mut self) -> Result<Term<'a>, DecodeError> {
         self.parse_string_impl(false)
     }
 
     /// Parse an object key (interned if cache enabled)
     #[inline]
-    fn parse_key(&mut self) -> Result<Term<'a>, (String, usize)> {
+    fn parse_key(&mut self) -> Result<Term<'a>, DecodeError> {
         self.parse_string_impl(true)
     }
 
+    /// Scan past a JSON string and return the raw bytes between the quotes.
+    /// Does not build a Term — used for shape-matching key comparison.
+    /// Returns the raw byte slice (between opening and closing quotes).
     #[inline]
-    fn decode_escaped_string(&self, start: usize, end: usize) -> Result<Vec<u8>, String> {
+    fn scan_string_raw(&mut self) -> Result<&'b [u8], DecodeError> {
+        let string_start = self.pos;
+        self.advance(); // Skip opening quote
+        let start = self.pos;
+
+        // Use SIMD scanning to skip past plain bytes, same as parse_string_impl
+        loop {
+            crate::simd_utils::skip_plain_string_bytes(self.input, &mut self.pos);
+
+            match self.peek() {
+                Some(b'"') => {
+                    let end = self.pos;
+                    self.advance(); // Skip closing quote
+                    return Ok(&self.input[start..end]);
+                }
+                Some(b'\\') => {
+                    self.advance();
+                    if self.peek().is_some() {
+                        self.advance();
+                    }
+                }
+                Some(0x00..=0x1F) => {
+                    return Err(self.err("Unescaped control character"));
+                }
+                Some(_) => self.advance(),
+                None => {
+                    return Err((Cow::Borrowed("Unterminated string"), string_start));
+                }
+            }
+        }
+    }
+
+    #[inline]
+    fn decode_escaped_string(
+        &self,
+        start: usize,
+        end: usize,
+    ) -> Result<Vec<u8>, Cow<'static, str>> {
         let mut result = Vec::with_capacity(end - start);
         let mut i = start;
 
@@ -463,12 +716,12 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                     b'u' => {
                         // Need exactly 4 hex digits
                         if i + 4 >= end {
-                            return Err("Incomplete unicode escape".to_string());
+                            return Err(Cow::Borrowed("Incomplete unicode escape"));
                         }
                         let hex = &self.input[i + 1..i + 5];
                         // Validate all 4 are hex digits
                         if !hex.iter().all(|&b| b.is_ascii_hexdigit()) {
-                            return Err("Invalid unicode escape".to_string());
+                            return Err(Cow::Borrowed("Invalid unicode escape"));
                         }
                         let cp =
                             u16::from_str_radix(std::str::from_utf8(hex).unwrap(), 16).unwrap();
@@ -502,10 +755,10 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                                 }
                             }
                             // Lone high surrogate - invalid
-                            return Err("Lone surrogate in string".to_string());
+                            return Err(Cow::Borrowed("Lone surrogate in string"));
                         } else if (0xDC00..=0xDFFF).contains(&cp) {
                             // Lone low surrogate - invalid
-                            return Err("Lone surrogate in string".to_string());
+                            return Err(Cow::Borrowed("Lone surrogate in string"));
                         }
 
                         // Regular BMP character
@@ -517,7 +770,10 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                     }
                     c => {
                         // Invalid escape sequence - only the above are valid in JSON
-                        return Err(format!("Invalid escape sequence: \\{}", c as char));
+                        return Err(Cow::Owned(format!(
+                            "Invalid escape sequence: \\{}",
+                            c as char
+                        )));
                     }
                 }
                 i += 1;
@@ -529,62 +785,152 @@ impl<'a, 'b> DirectParser<'a, 'b> {
         Ok(result)
     }
 
+    /// Fast-path integer parser for homogeneous number arrays.
+    /// Scans digits via direct slice indexing (no per-byte peek/advance),
+    /// and parses small positive/negative integers inline (≤18 digits)
+    /// without lexical_core overhead.
+    /// Falls back to parse_number for floats, leading zeros, digit limits, large numbers.
     #[inline]
-    fn parse_number(&mut self) -> Result<Term<'a>, (String, usize)> {
+    fn parse_number_fast(&mut self) -> Result<Term<'a>, DecodeError> {
         let start = self.pos;
+        let bytes = self.input;
+        let mut pos = start;
+
+        // Handle optional minus
+        let neg = pos < bytes.len() && bytes[pos] == b'-';
+        if neg {
+            pos += 1;
+        }
+
+        // Scan digits directly (no peek/advance per byte)
+        let digit_start = pos;
+        while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+            pos += 1;
+        }
+        let digit_count = pos - digit_start;
+
+        // If it's a float (has '.', 'e', 'E'), fall back to full parse_number
+        if pos < bytes.len() && matches!(bytes[pos], b'.' | b'e' | b'E') {
+            return self.parse_number();
+        }
+
+        // Validate: must have at least 1 digit
+        if digit_count == 0 {
+            return self.parse_number();
+        }
+        // Leading zero only for "0" or "-0"
+        if digit_count > 1 && bytes[digit_start] == b'0' {
+            return self.parse_number();
+        }
+
+        // Check integer digit limit
+        let limit = self.opts.integer_digit_limit;
+        if limit > 0 && digit_count > limit {
+            return self.parse_number();
+        }
+
+        self.pos = pos;
+        let num_bytes = &bytes[start..pos];
+
+        // Fast inline parse for ≤ 18 digits (no overflow possible for i64)
+        // SAFETY: max 18-digit unsigned is 999_999_999_999_999_999 which is < i64::MAX
+        // (9_223_372_036_854_775_807). Negation of the max 18-digit value is
+        // -999_999_999_999_999_999 which is > i64::MIN (-9_223_372_036_854_775_808).
+        // Therefore no overflow is possible during accumulation or negation.
+        // 19+ digit numbers fall through to lexical_core below.
+        if digit_count <= 18 {
+            let mut val: i64 = 0;
+            for &b in &bytes[digit_start..pos] {
+                val = val * 10 + (b - b'0') as i64;
+            }
+            if neg {
+                val = -val;
+            }
+            return Ok(val.encode(self.env));
+        }
+
+        // Larger numbers: use lexical_core (same as parse_number)
+        if let Ok(i) = lexical_core::parse::<i64>(num_bytes) {
+            Ok(i.encode(self.env))
+        } else if let Ok(u) = lexical_core::parse::<u64>(num_bytes) {
+            Ok(u.encode(self.env))
+        } else {
+            let num_str = std::str::from_utf8(num_bytes)
+                .map_err(|_| (Cow::Borrowed("Invalid number encoding"), start))?;
+            let big: BigInt = num_str
+                .parse()
+                .map_err(|_| (Cow::Borrowed("Invalid number"), start))?;
+            Ok(big.encode(self.env))
+        }
+    }
+
+    #[inline]
+    fn parse_number(&mut self) -> Result<Term<'a>, DecodeError> {
+        let start = self.pos;
+        let bytes = self.input;
+        let len = bytes.len();
+        let mut pos = start;
         let mut is_float = false;
 
         // Optional minus
-        if self.peek() == Some(b'-') {
-            self.advance();
+        if pos < len && bytes[pos] == b'-' {
+            pos += 1;
         }
 
         // Integer part - track digit count for digit limit
-        let int_digit_start = self.pos;
-        match self.peek() {
-            Some(b'0') => self.advance(),
-            Some(b'1'..=b'9') => {
-                self.advance();
-                while matches!(self.peek(), Some(b'0'..=b'9')) {
-                    self.advance();
+        let int_digit_start = pos;
+        if pos >= len {
+            return Err((Cow::Borrowed("Invalid number"), start));
+        }
+        match bytes[pos] {
+            b'0' => pos += 1,
+            b'1'..=b'9' => {
+                pos += 1;
+                while pos < len && bytes[pos].is_ascii_digit() {
+                    pos += 1;
                 }
             }
-            _ => return Err(("Invalid number".to_string(), start)),
+            _ => return Err((Cow::Borrowed("Invalid number"), start)),
         }
-        let int_digit_count = self.pos - int_digit_start;
+        let int_digit_count = pos - int_digit_start;
 
         // Check integer digit limit
         let limit = self.opts.integer_digit_limit;
         if limit > 0 && int_digit_count > limit {
-            return Err((format!("integer exceeds {} digit limit", limit), start));
+            return Err((
+                Cow::Owned(format!("integer exceeds {} digit limit", limit)),
+                start,
+            ));
         }
 
         // Fractional part
-        if self.peek() == Some(b'.') {
+        if pos < len && bytes[pos] == b'.' {
             is_float = true;
-            self.advance();
-            if !matches!(self.peek(), Some(b'0'..=b'9')) {
-                return Err(("Invalid number".to_string(), start));
+            pos += 1;
+            if pos >= len || !bytes[pos].is_ascii_digit() {
+                return Err((Cow::Borrowed("Invalid number"), start));
             }
-            while matches!(self.peek(), Some(b'0'..=b'9')) {
-                self.advance();
+            while pos < len && bytes[pos].is_ascii_digit() {
+                pos += 1;
             }
         }
 
         // Exponent
-        if matches!(self.peek(), Some(b'e') | Some(b'E')) {
+        if pos < len && (bytes[pos] == b'e' || bytes[pos] == b'E') {
             is_float = true;
-            self.advance();
-            if matches!(self.peek(), Some(b'+') | Some(b'-')) {
-                self.advance();
+            pos += 1;
+            if pos < len && (bytes[pos] == b'+' || bytes[pos] == b'-') {
+                pos += 1;
             }
-            if !matches!(self.peek(), Some(b'0'..=b'9')) {
-                return Err(("Invalid number".to_string(), start));
+            if pos >= len || !bytes[pos].is_ascii_digit() {
+                return Err((Cow::Borrowed("Invalid number"), start));
             }
-            while matches!(self.peek(), Some(b'0'..=b'9')) {
-                self.advance();
+            while pos < len && bytes[pos].is_ascii_digit() {
+                pos += 1;
             }
         }
+
+        self.pos = pos;
 
         let num_bytes = &self.input[start..self.pos];
 
@@ -593,8 +939,8 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                 return self.parse_number_as_decimal(num_bytes, start);
             }
             // Use lexical-core for fast float parsing
-            let f: f64 =
-                lexical_core::parse(num_bytes).map_err(|_| ("Invalid float".to_string(), start))?;
+            let f: f64 = lexical_core::parse(num_bytes)
+                .map_err(|_| (Cow::Borrowed("Invalid float"), start))?;
             Ok(f.encode(self.env))
         } else {
             // Try i64 first using lexical-core
@@ -605,10 +951,10 @@ impl<'a, 'b> DirectParser<'a, 'b> {
             } else {
                 // Parse as BigInt to preserve arbitrary precision (matches Jason behavior)
                 let num_str = std::str::from_utf8(num_bytes)
-                    .map_err(|_| ("Invalid number encoding".to_string(), start))?;
+                    .map_err(|_| (Cow::Borrowed("Invalid number encoding"), start))?;
                 let big: BigInt = num_str
                     .parse()
-                    .map_err(|_| ("Invalid number".to_string(), start))?;
+                    .map_err(|_| (Cow::Borrowed("Invalid number"), start))?;
                 Ok(big.encode(self.env))
             }
         }
@@ -619,9 +965,9 @@ impl<'a, 'b> DirectParser<'a, 'b> {
         &self,
         num_bytes: &[u8],
         start: usize,
-    ) -> Result<Term<'a>, (String, usize)> {
+    ) -> Result<Term<'a>, DecodeError> {
         let num_str = std::str::from_utf8(num_bytes)
-            .map_err(|_| ("Invalid number encoding".to_string(), start))?;
+            .map_err(|_| (Cow::Borrowed("Invalid number encoding"), start))?;
 
         // Determine sign
         let (sign_val, rest) = if let Some(stripped) = num_str.strip_prefix('-') {
@@ -666,7 +1012,7 @@ impl<'a, 'b> DirectParser<'a, 'b> {
         } else {
             use std::str::FromStr;
             let big = num_bigint::BigInt::from_str(coef_str)
-                .map_err(|_| ("Invalid decimal coefficient".to_string(), start))?;
+                .map_err(|_| (Cow::Borrowed("Invalid decimal coefficient"), start))?;
             big.encode(env)
         };
 
@@ -685,66 +1031,87 @@ impl<'a, 'b> DirectParser<'a, 'b> {
         ];
 
         Term::map_from_term_arrays(env, &keys, &values)
-            .map_err(|_| ("Failed to create Decimal struct".to_string(), start))
+            .map_err(|_| (Cow::Borrowed("Failed to create Decimal struct"), start))
     }
 
     #[inline]
-    fn parse_array(&mut self) -> Result<Term<'a>, (String, usize)> {
+    fn parse_array(&mut self) -> Result<Term<'a>, DecodeError> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
             return Err(self.err("Nesting depth exceeds maximum"));
         }
 
-        self.advance(); // Skip '['
+        self.consume_structural(); // Skip '['
         self.skip_whitespace();
 
         if self.peek() == Some(b']') {
-            self.advance();
+            self.consume_structural();
             self.depth -= 1;
             return Ok(Term::list_new_empty(self.env));
         }
 
-        // Parse first element on stack before allocating
-        let first = self.parse_value()?;
-        self.skip_whitespace();
+        // Parse first element; if it's an object, capture its key shape
+        let mut shape: Option<KeyShape<'a, 'b>> = None;
+        let first = if self.peek() == Some(b'{') {
+            self.parse_object_shaped(&mut shape)?
+        } else {
+            self.parse_value()?
+        };
+        self.advance_to_structural();
 
         match self.peek() {
             Some(b']') => {
                 // Single-element fast path: no Vec allocation
-                self.advance();
+                self.consume_structural();
                 self.depth -= 1;
                 return Ok(Term::list_new_empty(self.env).list_prepend(first));
             }
             Some(b',') => {
-                self.advance();
-                self.skip_whitespace();
+                self.consume_structural_and_skip_ws();
             }
             _ => return Err(self.err("Expected ',' or ']'")),
         }
 
         // Multi-element: allocate Vec and continue
-        let remaining = self.input.len() - self.pos;
-        let estimated = (remaining / 20).clamp(1, 1024);
-        let cap = if self.depth > 1 {
-            estimated.min(8)
-        } else {
-            estimated
-        };
-        let mut elements = Vec::with_capacity(cap + 1);
+        // +1 for the already-parsed first element
+        let cap = self.estimate_container_capacity(b']', 20, 1024) + 1;
+        let mut elements = Vec::with_capacity(cap);
         elements.push(first);
 
+        // Detect element class from second element's first byte for tight inner loop:
+        // 1 = Number, 2 = String, 0 = Other/mixed (no specialization)
+        let elem_class = match self.peek() {
+            Some(b'0'..=b'9') | Some(b'-') => 1u8,
+            Some(b'"') => 2u8,
+            _ => 0u8,
+        };
+
         loop {
-            let elem = self.parse_value()?;
+            let elem = match elem_class {
+                1 if matches!(self.peek(), Some(b'0'..=b'9') | Some(b'-')) => {
+                    self.parse_number_fast()?
+                }
+                2 if self.peek() == Some(b'"') => self.parse_string()?,
+                _ => {
+                    if self.peek() == Some(b'{') && shape.is_some() {
+                        self.parse_object_shaped(&mut shape)?
+                    } else {
+                        if self.peek() != Some(b'{') {
+                            shape = None;
+                        }
+                        self.parse_value()?
+                    }
+                }
+            };
             elements.push(elem);
-            self.skip_whitespace();
+            self.advance_to_structural();
 
             match self.peek() {
                 Some(b',') => {
-                    self.advance();
-                    self.skip_whitespace();
+                    self.consume_structural_and_skip_ws();
                 }
                 Some(b']') => {
-                    self.advance();
+                    self.consume_structural();
                     break;
                 }
                 _ => return Err(self.err("Expected ',' or ']'")),
@@ -761,18 +1128,18 @@ impl<'a, 'b> DirectParser<'a, 'b> {
     }
 
     #[inline]
-    fn parse_object(&mut self) -> Result<Term<'a>, (String, usize)> {
+    fn parse_object(&mut self) -> Result<Term<'a>, DecodeError> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
             return Err(self.err("Nesting depth exceeds maximum"));
         }
 
         let obj_start = self.pos;
-        self.advance(); // Skip '{'
+        self.consume_structural(); // Skip '{'
         self.skip_whitespace();
 
         if self.peek() == Some(b'}') {
-            self.advance();
+            self.consume_structural();
             self.depth -= 1;
             if self.opts.ordered_objects {
                 return self.build_ordered_object(&[], &[], obj_start);
@@ -788,57 +1155,52 @@ impl<'a, 'b> DirectParser<'a, 'b> {
         let first_key = self.parse_key()?;
         let first_key_end = self.pos;
 
-        self.skip_whitespace();
+        self.advance_to_structural();
         if self.peek() != Some(b':') {
             return Err(self.err("Expected ':'"));
         }
-        self.advance();
-        self.skip_whitespace();
+        self.consume_structural_and_skip_ws();
+        // Capture first value's leading byte to detect flat objects
+        let first_value_byte = self.peek();
+        let is_flat = !matches!(first_value_byte, Some(b'{') | Some(b'['));
         let first_value = self.parse_value()?;
 
-        self.skip_whitespace();
+        self.advance_to_structural();
         match self.peek() {
             Some(b'}') => {
                 // Single-entry fast path: no Vec/HashSet allocation
-                self.advance();
+                self.consume_structural();
                 self.depth -= 1;
                 if self.opts.ordered_objects {
                     return self.build_ordered_object(&[first_key], &[first_value], obj_start);
                 }
                 return Term::map_from_term_arrays(self.env, &[first_key], &[first_value])
-                    .map_err(|_| ("Failed to create map".to_string(), obj_start));
+                    .map_err(|_| (Cow::Borrowed("Failed to create map"), obj_start));
             }
             Some(b',') => {
-                self.advance();
-                self.skip_whitespace();
+                self.consume_structural_and_skip_ws();
             }
             _ => return Err(self.err("Expected ',' or '}'")),
         }
 
         // Multi-entry path: allocate Vecs and continue
-        let remaining = self.input.len() - self.pos;
-        let estimated = (remaining / 30).clamp(1, 256);
-        let cap = if self.depth > 1 {
-            estimated.min(8)
-        } else {
-            estimated
-        };
-        let mut keys = Vec::with_capacity(cap + 1);
-        let mut values = Vec::with_capacity(cap + 1);
+        // +1 for the already-parsed first key-value pair
+        // Note: for objects, structural index counts commas (between key-value pairs)
+        // and the colon separators are also structural chars, but count_elements_until_close
+        // only counts commas at depth 0 between the open/close braces.
+        let cap = self.estimate_container_capacity(b'}', 30, 256) + 1;
+        let mut keys = Vec::with_capacity(cap);
+        let mut values = Vec::with_capacity(cap);
         keys.push(first_key);
         values.push(first_value);
 
         // Optional duplicate key tracking (only needed for multi-entry objects)
-        let seen_cap = if self.depth > 1 {
-            estimated.min(16)
-        } else {
-            estimated
-        };
-        let mut seen_keys: Option<HashSet<Vec<u8>>> = if self.opts.reject_duplicate_keys {
+        let seen_cap = cap;
+        let mut seen_keys: Option<HashSet<&'b [u8]>> = if self.opts.reject_duplicate_keys {
             let mut set = HashSet::with_capacity(seen_cap);
             // Insert first key's raw bytes (between opening and closing quotes)
             let raw_first = &self.input[first_key_start + 1..first_key_end - 1];
-            set.insert(raw_first.to_vec());
+            set.insert(raw_first);
             Some(set)
         } else {
             None
@@ -854,31 +1216,35 @@ impl<'a, 'b> DirectParser<'a, 'b> {
             // Check for duplicate keys if enabled
             if let Some(ref mut seen) = seen_keys {
                 let raw_key = &self.input[key_start + 1..self.pos - 1];
-                if !seen.insert(raw_key.to_vec()) {
-                    return Err(("Duplicate key in object".to_string(), self.pos));
+                if !seen.insert(raw_key) {
+                    return Err((Cow::Borrowed("Duplicate key in object"), self.pos));
                 }
             }
 
             keys.push(key);
 
-            self.skip_whitespace();
+            self.advance_to_structural();
             if self.peek() != Some(b':') {
                 return Err(self.err("Expected ':'"));
             }
-            self.advance();
-            self.skip_whitespace();
+            self.consume_structural_and_skip_ws();
 
-            let value = self.parse_value()?;
+            // Flat objects: use optimized scalar value parser (parse_number_fast
+            // for numbers, direct dispatch without container arms)
+            let value = if is_flat {
+                self.parse_value_flat()?
+            } else {
+                self.parse_value()?
+            };
             values.push(value);
 
-            self.skip_whitespace();
+            self.advance_to_structural();
             match self.peek() {
                 Some(b',') => {
-                    self.advance();
-                    self.skip_whitespace();
+                    self.consume_structural_and_skip_ws();
                 }
                 Some(b'}') => {
-                    self.advance();
+                    self.consume_structural();
                     break;
                 }
                 _ => return Err(self.err("Expected ',' or '}'")),
@@ -901,6 +1267,284 @@ impl<'a, 'b> DirectParser<'a, 'b> {
         }
     }
 
+    /// Shape-aware object parser for arrays of same-shaped objects.
+    /// On first call (shape is None): parses normally and captures the key shape.
+    /// On subsequent calls (shape is Some): tries to match keys against the cached shape.
+    /// If shape match fails, falls back to normal parsing and disables shape for the array.
+    #[inline]
+    fn parse_object_shaped(
+        &mut self,
+        shape: &mut Option<KeyShape<'a, 'b>>,
+    ) -> Result<Term<'a>, DecodeError> {
+        if shape.is_none() {
+            // First object: parse normally and capture shape
+            return self.parse_object_capture_shape(shape);
+        }
+
+        // Subsequent objects: try shape-matched fast path
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err(self.err("Nesting depth exceeds maximum"));
+        }
+
+        let obj_start = self.pos;
+        let saved_cursor = self.structural_index.as_ref().map(|idx| idx.cursor);
+        self.consume_structural(); // Skip '{'
+        self.skip_whitespace();
+
+        let cached = shape.as_ref().unwrap();
+        let num_keys = cached.raw_keys.len();
+
+        // Macro to rewind both pos and structural index cursor on shape mismatch
+        macro_rules! rewind_and_fallback {
+            ($self:ident, $shape:ident, $obj_start:ident, $saved_cursor:ident) => {{
+                $self.depth -= 1;
+                $self.pos = $obj_start;
+                if let Some(ref mut idx) = $self.structural_index {
+                    idx.cursor = $saved_cursor.unwrap();
+                }
+                *$shape = None;
+                return $self.parse_object();
+            }};
+        }
+
+        // Empty object shape
+        if num_keys == 0 {
+            if self.peek() == Some(b'}') {
+                self.consume_structural();
+                self.depth -= 1;
+                if self.opts.ordered_objects {
+                    return self.build_ordered_object(&[], &[], obj_start);
+                }
+                return Ok(Term::map_new(self.env));
+            }
+            // Not empty — shape mismatch, fall back
+            rewind_and_fallback!(self, shape, obj_start, saved_cursor);
+        }
+
+        // Try to match each key against the shape
+        let mut values = Vec::with_capacity(num_keys);
+        let flat = cached.is_flat;
+
+        for i in 0..num_keys {
+            if i > 0 {
+                // Expect comma between entries
+                if self.peek() != Some(b',') {
+                    // Fewer keys than shape — mismatch
+                    rewind_and_fallback!(self, shape, obj_start, saved_cursor);
+                }
+                self.consume_structural_and_skip_ws();
+            }
+
+            if self.peek() != Some(b'"') {
+                // Not a string key — mismatch
+                rewind_and_fallback!(self, shape, obj_start, saved_cursor);
+            }
+
+            let raw_key = self.scan_string_raw()?;
+
+            if raw_key != cached.raw_keys[i] {
+                // Key mismatch — abandon shape, reparse this object from scratch
+                rewind_and_fallback!(self, shape, obj_start, saved_cursor);
+            }
+
+            self.advance_to_structural();
+            if self.peek() != Some(b':') {
+                return Err(self.err("Expected ':'"));
+            }
+            self.consume_structural_and_skip_ws();
+
+            // Flat objects: use optimized scalar value parser
+            let value = if flat {
+                self.parse_value_flat()?
+            } else {
+                self.parse_value()?
+            };
+            values.push(value);
+
+            self.advance_to_structural();
+        }
+
+        // After all shape keys, expect closing brace
+        match self.peek() {
+            Some(b'}') => {
+                self.consume_structural();
+            }
+            Some(b',') => {
+                // More keys than shape — mismatch
+                rewind_and_fallback!(self, shape, obj_start, saved_cursor);
+            }
+            _ => return Err(self.err("Expected ',' or '}'")),
+        }
+
+        self.depth -= 1;
+
+        let key_terms = &shape.as_ref().unwrap().key_terms;
+
+        if self.opts.ordered_objects {
+            return self.build_ordered_object(key_terms, &values, obj_start);
+        }
+
+        match Term::map_from_term_arrays(self.env, key_terms, &values) {
+            Ok(map) => Ok(map),
+            Err(_) => self.build_map_with_duplicates(key_terms, &values, obj_start),
+        }
+    }
+
+    /// Parse an object and capture its key shape for subsequent same-shape matching.
+    fn parse_object_capture_shape(
+        &mut self,
+        shape: &mut Option<KeyShape<'a, 'b>>,
+    ) -> Result<Term<'a>, DecodeError> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err(self.err("Nesting depth exceeds maximum"));
+        }
+
+        let obj_start = self.pos;
+        self.consume_structural(); // Skip '{'
+        self.skip_whitespace();
+
+        if self.peek() == Some(b'}') {
+            self.consume_structural();
+            self.depth -= 1;
+            // Capture empty shape
+            *shape = Some(KeyShape {
+                raw_keys: Vec::new(),
+                key_terms: Vec::new(),
+                is_flat: true,
+            });
+            if self.opts.ordered_objects {
+                return self.build_ordered_object(&[], &[], obj_start);
+            }
+            return Ok(Term::map_new(self.env));
+        }
+
+        // Parse first key-value pair
+        if self.peek() != Some(b'"') {
+            return Err(self.err("Expected string key"));
+        }
+        let first_key_start = self.pos;
+        let first_key = self.parse_key()?;
+        let first_key_end = self.pos;
+        let first_raw_key = &self.input[first_key_start + 1..first_key_end - 1];
+
+        self.advance_to_structural();
+        if self.peek() != Some(b':') {
+            return Err(self.err("Expected ':'"));
+        }
+        self.consume_structural_and_skip_ws();
+        // Capture first value's leading byte to detect flat objects
+        let first_value_byte = self.peek();
+        let is_flat = !matches!(first_value_byte, Some(b'{') | Some(b'['));
+        let first_value = self.parse_value()?;
+
+        self.advance_to_structural();
+        match self.peek() {
+            Some(b'}') => {
+                // Single-entry object
+                self.consume_structural();
+                self.depth -= 1;
+                *shape = Some(KeyShape {
+                    raw_keys: vec![first_raw_key],
+                    key_terms: vec![first_key],
+                    is_flat,
+                });
+                if self.opts.ordered_objects {
+                    return self.build_ordered_object(&[first_key], &[first_value], obj_start);
+                }
+                return Term::map_from_term_arrays(self.env, &[first_key], &[first_value])
+                    .map_err(|_| (Cow::Borrowed("Failed to create map"), obj_start));
+            }
+            Some(b',') => {
+                self.consume_structural_and_skip_ws();
+            }
+            _ => return Err(self.err("Expected ',' or '}'")),
+        }
+
+        // Multi-entry path
+        // +1 for the already-parsed first key-value pair
+        let cap = self.estimate_container_capacity(b'}', 30, 256) + 1;
+        let mut keys = Vec::with_capacity(cap);
+        let mut values = Vec::with_capacity(cap);
+        let mut raw_keys: Vec<&'b [u8]> = Vec::with_capacity(cap);
+        keys.push(first_key);
+        values.push(first_value);
+        raw_keys.push(first_raw_key);
+
+        let seen_cap = cap;
+        let mut seen_keys: Option<HashSet<&'b [u8]>> = if self.opts.reject_duplicate_keys {
+            let mut set = HashSet::with_capacity(seen_cap);
+            set.insert(first_raw_key);
+            Some(set)
+        } else {
+            None
+        };
+
+        loop {
+            if self.peek() != Some(b'"') {
+                return Err(self.err("Expected string key"));
+            }
+            let key_start = self.pos;
+            let key = self.parse_key()?;
+            let key_end = self.pos;
+            let raw_key = &self.input[key_start + 1..key_end - 1];
+
+            if let Some(ref mut seen) = seen_keys {
+                if !seen.insert(raw_key) {
+                    return Err((Cow::Borrowed("Duplicate key in object"), self.pos));
+                }
+            }
+
+            keys.push(key);
+            raw_keys.push(raw_key);
+
+            self.advance_to_structural();
+            if self.peek() != Some(b':') {
+                return Err(self.err("Expected ':'"));
+            }
+            self.consume_structural_and_skip_ws();
+
+            // Flat objects: use optimized scalar value parser
+            let value = if is_flat {
+                self.parse_value_flat()?
+            } else {
+                self.parse_value()?
+            };
+            values.push(value);
+
+            self.advance_to_structural();
+            match self.peek() {
+                Some(b',') => {
+                    self.consume_structural_and_skip_ws();
+                }
+                Some(b'}') => {
+                    self.consume_structural();
+                    break;
+                }
+                _ => return Err(self.err("Expected ',' or '}'")),
+            }
+        }
+
+        self.depth -= 1;
+
+        // Capture shape for subsequent objects
+        *shape = Some(KeyShape {
+            raw_keys,
+            key_terms: keys.clone(),
+            is_flat,
+        });
+
+        if self.opts.ordered_objects {
+            return self.build_ordered_object(&keys, &values, obj_start);
+        }
+
+        match Term::map_from_term_arrays(self.env, &keys, &values) {
+            Ok(map) => Ok(map),
+            Err(_) => self.build_map_with_duplicates(&keys, &values, obj_start),
+        }
+    }
+
     /// Build %RustyJson.OrderedObject{values: [{k, v}, ...]} preserving order.
     /// Pass empty vecs for an empty ordered object.
     fn build_ordered_object(
@@ -908,7 +1552,7 @@ impl<'a, 'b> DirectParser<'a, 'b> {
         keys: &[Term<'a>],
         values: &[Term<'a>],
         pos: usize,
-    ) -> Result<Term<'a>, (String, usize)> {
+    ) -> Result<Term<'a>, DecodeError> {
         let env = self.env;
 
         // Build list of {key, value} tuples in order
@@ -925,7 +1569,7 @@ impl<'a, 'b> DirectParser<'a, 'b> {
         let map_vals = [atoms::ordered_object_struct().to_term(env), list];
 
         Term::map_from_term_arrays(env, &map_keys, &map_vals)
-            .map_err(|_| ("Failed to create OrderedObject".to_string(), pos))
+            .map_err(|_| (Cow::Borrowed("Failed to create OrderedObject"), pos))
     }
 
     /// Build a map handling duplicate keys with "last wins" semantics
@@ -935,7 +1579,7 @@ impl<'a, 'b> DirectParser<'a, 'b> {
         keys: &[Term<'a>],
         values: &[Term<'a>],
         pos: usize,
-    ) -> Result<Term<'a>, (String, usize)> {
+    ) -> Result<Term<'a>, DecodeError> {
         // Extract key bytes and deduplicate
         let mut key_map: HashMap<Vec<u8>, usize> = HashMap::with_capacity(keys.len());
         let mut final_keys = Vec::with_capacity(keys.len());
@@ -958,7 +1602,7 @@ impl<'a, 'b> DirectParser<'a, 'b> {
         }
 
         Term::map_from_term_arrays(self.env, &final_keys, &final_values)
-            .map_err(|_| ("Failed to create map".to_string(), pos))
+            .map_err(|_| (Cow::Borrowed("Failed to create map"), pos))
     }
 }
 
@@ -969,21 +1613,403 @@ fn encode_binary<'a>(env: Env<'a>, bytes: &[u8]) -> Term<'a> {
     bin.into()
 }
 
+// ============================================================================
+// Benchmark helpers - feature-gated, excluded from production binary
+// ============================================================================
+
+#[cfg(feature = "bench")]
+pub mod bench_helpers {
+    /// Skip whitespace bytes (space, tab, newline, carriage return) starting at `pos`.
+    /// Returns the new position after all whitespace.
+    #[inline]
+    pub fn skip_whitespace(input: &[u8], mut pos: usize) -> usize {
+        while pos < input.len() {
+            match input[pos] {
+                b' ' | b'\t' | b'\n' | b'\r' => pos += 1,
+                _ => break,
+            }
+        }
+        pos
+    }
+
+    /// Scan a JSON string starting at `pos` (which should point to the opening `"`).
+    /// Returns `(end_pos, has_escape)` where `end_pos` is one past the closing quote.
+    /// Uses the same SIMD fast-path as the real parser.
+    #[inline]
+    pub fn scan_string(input: &[u8], mut pos: usize) -> (usize, bool) {
+        if pos >= input.len() || input[pos] != b'"' {
+            return (pos, false);
+        }
+        pos += 1; // skip opening quote
+        let mut has_escape = false;
+
+        loop {
+            // SIMD bulk skip for plain bytes (portable SIMD)
+            crate::simd_utils::skip_plain_string_bytes(input, &mut pos);
+
+            // Byte-at-a-time for remainder
+            if pos >= input.len() {
+                return (pos, has_escape);
+            }
+            match input[pos] {
+                b'"' => {
+                    pos += 1; // skip closing quote
+                    return (pos, has_escape);
+                }
+                b'\\' => {
+                    has_escape = true;
+                    pos += 1;
+                    if pos < input.len() {
+                        pos += 1; // skip escaped char
+                    }
+                }
+                0x00..=0x1F => {
+                    return (pos, has_escape); // control char = error in real parser
+                }
+                _ => pos += 1,
+            }
+        }
+    }
+
+    /// Scan a JSON number starting at `pos`.
+    /// Returns `(end_pos, is_float)` where `end_pos` is one past the last digit.
+    #[inline]
+    pub fn scan_number(input: &[u8], mut pos: usize) -> (usize, bool) {
+        let mut is_float = false;
+
+        // Optional minus
+        if pos < input.len() && input[pos] == b'-' {
+            pos += 1;
+        }
+
+        // Integer part
+        if pos < input.len() {
+            match input[pos] {
+                b'0' => pos += 1,
+                b'1'..=b'9' => {
+                    pos += 1;
+                    while pos < input.len() && input[pos].is_ascii_digit() {
+                        pos += 1;
+                    }
+                }
+                _ => return (pos, false),
+            }
+        }
+
+        // Fractional part
+        if pos < input.len() && input[pos] == b'.' {
+            is_float = true;
+            pos += 1;
+            if pos >= input.len() || !input[pos].is_ascii_digit() {
+                return (pos, is_float);
+            }
+            while pos < input.len() && input[pos].is_ascii_digit() {
+                pos += 1;
+            }
+        }
+
+        // Exponent
+        if pos < input.len() && (input[pos] == b'e' || input[pos] == b'E') {
+            is_float = true;
+            pos += 1;
+            if pos < input.len() && (input[pos] == b'+' || input[pos] == b'-') {
+                pos += 1;
+            }
+            while pos < input.len() && input[pos].is_ascii_digit() {
+                pos += 1;
+            }
+        }
+
+        (pos, is_float)
+    }
+
+    /// Decode a JSON string with escape sequences.
+    /// `start` and `end` are byte offsets into `input` pointing to the content
+    /// between (but not including) the opening and closing quotes.
+    pub fn decode_escaped_string(
+        input: &[u8],
+        start: usize,
+        end: usize,
+    ) -> Result<Vec<u8>, String> {
+        let mut result = Vec::with_capacity(end - start);
+        let mut i = start;
+
+        while i < end {
+            if input[i] == b'\\' && i + 1 < end {
+                i += 1;
+                match input[i] {
+                    b'"' => result.push(b'"'),
+                    b'\\' => result.push(b'\\'),
+                    b'/' => result.push(b'/'),
+                    b'b' => result.push(0x08),
+                    b'f' => result.push(0x0C),
+                    b'n' => result.push(b'\n'),
+                    b'r' => result.push(b'\r'),
+                    b't' => result.push(b'\t'),
+                    b'u' => {
+                        if i + 4 >= end {
+                            return Err("Incomplete unicode escape".to_string());
+                        }
+                        let hex = &input[i + 1..i + 5];
+                        if !hex.iter().all(|&b| b.is_ascii_hexdigit()) {
+                            return Err("Invalid unicode escape".to_string());
+                        }
+                        let cp =
+                            u16::from_str_radix(std::str::from_utf8(hex).unwrap(), 16).unwrap();
+
+                        if (0xD800..=0xDBFF).contains(&cp) {
+                            if i + 11 <= end && input[i + 5] == b'\\' && input[i + 6] == b'u' {
+                                let hex2 = &input[i + 7..i + 11];
+                                if hex2.iter().all(|&b| b.is_ascii_hexdigit()) {
+                                    let cp2 =
+                                        u16::from_str_radix(std::str::from_utf8(hex2).unwrap(), 16)
+                                            .unwrap();
+                                    if (0xDC00..=0xDFFF).contains(&cp2) {
+                                        let full_cp = 0x10000
+                                            + ((cp as u32 - 0xD800) << 10)
+                                            + (cp2 as u32 - 0xDC00);
+                                        if let Some(c) = char::from_u32(full_cp) {
+                                            let mut buf = [0u8; 4];
+                                            result.extend_from_slice(
+                                                c.encode_utf8(&mut buf).as_bytes(),
+                                            );
+                                        }
+                                        i += 11;
+                                        continue;
+                                    }
+                                }
+                            }
+                            return Err("Lone surrogate in string".to_string());
+                        } else if (0xDC00..=0xDFFF).contains(&cp) {
+                            return Err("Lone surrogate in string".to_string());
+                        }
+
+                        if let Some(c) = char::from_u32(cp as u32) {
+                            let mut buf = [0u8; 4];
+                            result.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+                        }
+                        i += 4;
+                    }
+                    c => {
+                        return Err(format!("Invalid escape sequence: \\{}", c as char));
+                    }
+                }
+                i += 1;
+            } else {
+                result.push(input[i]);
+                i += 1;
+            }
+        }
+        Ok(result)
+    }
+
+    /// Build a structural index for the given input.
+    /// Returns the number of structural positions found.
+    pub fn build_structural_index(input: &[u8]) -> usize {
+        let idx = super::build_structural_index(input);
+        idx.positions.len()
+    }
+
+    /// Parse an integer from bytes using the same inline logic as parse_number_fast.
+    /// Returns Ok(value) for valid integers ≤18 digits, Err(()) for anything else
+    /// (floats, >18 digits, invalid input).
+    pub fn parse_integer_fast(input: &[u8], mut pos: usize) -> Result<i64, ()> {
+        if pos >= input.len() {
+            return Err(());
+        }
+        let start = pos;
+        let neg = input[pos] == b'-';
+        if neg {
+            pos += 1;
+        }
+        let digit_start = pos;
+        while pos < input.len() && input[pos].is_ascii_digit() {
+            pos += 1;
+        }
+        let digit_count = pos - digit_start;
+        if digit_count == 0 {
+            return Err(());
+        }
+        // Leading zero only for "0" or "-0"
+        if digit_count > 1 && input[digit_start] == b'0' {
+            return Err(());
+        }
+        // Reject floats / exponents
+        if pos < input.len() && matches!(input[pos], b'.' | b'e' | b'E') {
+            return Err(());
+        }
+        // Only handle ≤18 digits (no overflow possible for i64)
+        if digit_count > 18 {
+            return Err(());
+        }
+        let mut val: i64 = 0;
+        for &b in &input[digit_start..pos] {
+            val = val * 10 + (b - b'0') as i64;
+        }
+        if neg {
+            val = -val;
+        }
+        // Verify we consumed exactly the right number of bytes from start
+        let _ = start;
+        Ok(val)
+    }
+
+    /// Validate JSON structure using the same scanning logic as the real parser.
+    /// Exercises: structural index, whitespace skip, string scan, number scan,
+    /// bracket matching, and basic value validation.
+    /// Returns true if the input is structurally valid JSON, false otherwise.
+    pub fn validate_json(input: &[u8]) -> bool {
+        let pos = skip_whitespace(input, 0);
+        if pos >= input.len() {
+            return false;
+        }
+        let result = validate_value(input, pos);
+        match result {
+            Some(new_pos) => {
+                let final_pos = skip_whitespace(input, new_pos);
+                final_pos == input.len()
+            }
+            None => false,
+        }
+    }
+
+    /// Validate a single JSON value starting at `pos`.
+    /// Returns Some(end_pos) if valid, None if invalid.
+    fn validate_value(input: &[u8], pos: usize) -> Option<usize> {
+        if pos >= input.len() {
+            return None;
+        }
+        match input[pos] {
+            b'"' => {
+                let (end, _has_escape) = scan_string(input, pos);
+                // scan_string returns pos unchanged if no closing quote found
+                if end == pos {
+                    None
+                } else {
+                    Some(end)
+                }
+            }
+            b'0'..=b'9' | b'-' => {
+                let (end, _is_float) = scan_number(input, pos);
+                if end == pos || (input[pos] == b'-' && end == pos + 1) {
+                    None
+                } else {
+                    Some(end)
+                }
+            }
+            b't' => {
+                if input.len() >= pos + 4 && &input[pos..pos + 4] == b"true" {
+                    Some(pos + 4)
+                } else {
+                    None
+                }
+            }
+            b'f' => {
+                if input.len() >= pos + 5 && &input[pos..pos + 5] == b"false" {
+                    Some(pos + 5)
+                } else {
+                    None
+                }
+            }
+            b'n' => {
+                if input.len() >= pos + 4 && &input[pos..pos + 4] == b"null" {
+                    Some(pos + 4)
+                } else {
+                    None
+                }
+            }
+            b'[' => validate_array(input, pos),
+            b'{' => validate_object(input, pos),
+            _ => None,
+        }
+    }
+
+    fn validate_array(input: &[u8], pos: usize) -> Option<usize> {
+        let mut pos = pos + 1; // skip '['
+        pos = skip_whitespace(input, pos);
+        if pos < input.len() && input[pos] == b']' {
+            return Some(pos + 1);
+        }
+        // First element
+        pos = validate_value(input, pos)?;
+        pos = skip_whitespace(input, pos);
+        while pos < input.len() && input[pos] == b',' {
+            pos += 1; // skip ','
+            pos = skip_whitespace(input, pos);
+            pos = validate_value(input, pos)?;
+            pos = skip_whitespace(input, pos);
+        }
+        if pos < input.len() && input[pos] == b']' {
+            Some(pos + 1)
+        } else {
+            None
+        }
+    }
+
+    fn validate_object(input: &[u8], pos: usize) -> Option<usize> {
+        let mut pos = pos + 1; // skip '{'
+        pos = skip_whitespace(input, pos);
+        if pos < input.len() && input[pos] == b'}' {
+            return Some(pos + 1);
+        }
+        // First key-value pair
+        if pos >= input.len() || input[pos] != b'"' {
+            return None;
+        }
+        let (end, _) = scan_string(input, pos);
+        if end == pos {
+            return None;
+        }
+        pos = skip_whitespace(input, end);
+        if pos >= input.len() || input[pos] != b':' {
+            return None;
+        }
+        pos += 1; // skip ':'
+        pos = skip_whitespace(input, pos);
+        pos = validate_value(input, pos)?;
+        pos = skip_whitespace(input, pos);
+        while pos < input.len() && input[pos] == b',' {
+            pos += 1; // skip ','
+            pos = skip_whitespace(input, pos);
+            if pos >= input.len() || input[pos] != b'"' {
+                return None;
+            }
+            let (end, _) = scan_string(input, pos);
+            if end == pos {
+                return None;
+            }
+            pos = skip_whitespace(input, end);
+            if pos >= input.len() || input[pos] != b':' {
+                return None;
+            }
+            pos += 1;
+            pos = skip_whitespace(input, pos);
+            pos = validate_value(input, pos)?;
+            pos = skip_whitespace(input, pos);
+        }
+        if pos < input.len() && input[pos] == b'}' {
+            Some(pos + 1)
+        } else {
+            None
+        }
+    }
+}
+
 /// Parse JSON directly to Erlang terms without intermediate representation
 #[inline]
 pub fn json_to_term<'a>(
     env: Env<'a>,
     input_binary: &Binary<'a>,
     opts: DecodeOptions,
-) -> Result<Term<'a>, (String, usize)> {
+) -> Result<Term<'a>, DecodeError> {
     let json = input_binary.as_slice();
     if opts.max_bytes > 0 && json.len() > opts.max_bytes {
         return Err((
-            format!(
+            Cow::Owned(format!(
                 "input size {} exceeds max_bytes limit of {}",
                 json.len(),
                 opts.max_bytes
-            ),
+            )),
             0,
         ));
     }

@@ -51,10 +51,10 @@ defmodule FormatterTest do
       assert IO.iodata_to_binary(iodata) == str
     end
 
-    test "minimize with opts param accepted" do
+    test "minimize with opts param produces correct output" do
       input = ~s({"a": 1})
       result = RustyJson.Formatter.minimize(input, [])
-      assert is_binary(result)
+      assert result == ~s({"a":1})
     end
   end
 
@@ -133,29 +133,12 @@ defmodule FormatterTest do
       assert result == "{\"a\":1}"
     end
 
-    test "pretty_print without record_separator has no prefix" do
-      input = ~s({"a":1})
-      result = RustyJson.Formatter.pretty_print(input)
-      assert result == "{\n  \"a\": 1\n}"
-    end
-
-    test "record_separator with custom string" do
-      input = ~s([1,2])
-      result = RustyJson.Formatter.minimize(input, record_separator: "\x1E")
-      # Jason behavior: no separator for single record
-      assert result == "[1,2]"
-    end
+    # "pretty_print without record_separator" is identical to the base
+    # pretty_print test above — the default behavior is already covered.
+    # "record_separator with custom string on single record" is equivalent
+    # to the minimize test above — single records never get a separator.
   end
 
-  describe "non-JSON passthrough (matches Jason)" do
-    test "pretty_print strips whitespace from non-JSON input" do
-      # Both Jason and RustyJson formatters operate on raw bytes without
-      # validating JSON structure. Non-JSON input has whitespace stripped.
-      assert RustyJson.Formatter.pretty_print("not json") == "notjson"
-    end
-
-    test "minimize strips whitespace from non-JSON input" do
-      assert RustyJson.Formatter.minimize("not json") == "notjson"
-    end
-  end
+  # Non-JSON passthrough tests removed: testing formatter behavior on
+  # invalid input is testing undocumented/accidental behavior, not a contract.
 end

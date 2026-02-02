@@ -28,6 +28,11 @@ rustyjson-*.tar
 
 native/rustyjson/target/
 
+# Fuzz corpus and artifacts (regeneratable via cargo fuzz)
+native/rustyjson/fuzz/corpus/
+native/rustyjson/fuzz/artifacts/
+native/rustyjson/fuzz/target/
+
 # Dialyzer PLT files
 /priv/plts/
 

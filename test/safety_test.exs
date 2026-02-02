@@ -32,12 +32,7 @@ defmodule SafetyTest do
   end
 
   describe "key interning" do
-    test "interning produces correct results" do
-      json = ~s([{"id":1,"name":"a"},{"id":2,"name":"b"}])
-
-      assert [%{"id" => 1, "name" => "a"}, %{"id" => 2, "name" => "b"}] ==
-               RustyJson.decode!(json, keys: :intern)
-    end
+    # Basic interning correctness is tested in decoder_test.exs "decode with keys: :intern"
 
     test "interning works correctly with many unique keys (exceeds internal cache cap)" do
       # The intern cache is capped at 4096 unique keys. Beyond that, keys are
@@ -87,9 +82,7 @@ defmodule SafetyTest do
   end
 
   describe "duplicate key handling" do
-    test "default allows duplicates (last wins)" do
-      assert {:ok, %{"a" => 2}} = RustyJson.decode(~s({"a":1,"a":2}))
-    end
+    # "default allows duplicates (last wins)" is tested in decoder_test.exs
 
     test "duplicate_keys: :error rejects duplicates" do
       assert {:error, %RustyJson.DecodeError{message: msg}} =
@@ -192,12 +185,20 @@ defmodule SafetyTest do
       assert {:ok, _} = RustyJson.encode(%{a: 1}, scheduler: :normal)
     end
 
-    test "encode with compression auto-promotes to dirty" do
-      assert {:ok, _} = RustyJson.encode(%{a: 1}, compress: :gzip)
+    test "encode with compression auto-promotes to dirty scheduler" do
+      # scheduler: :auto with compression should use dirty NIF.
+      # Verify correctness: the result must be valid gzip regardless of scheduler.
+      {:ok, result} = RustyJson.encode(%{a: 1}, compress: :gzip)
+      assert :zlib.gunzip(result) == ~s({"a":1})
     end
 
-    test "encode with scheduler: :auto (default) works without compression" do
-      assert {:ok, _} = RustyJson.encode(%{a: 1}, scheduler: :auto)
+    test "all scheduler modes produce identical output" do
+      data = %{name: "test", values: [1, 2, 3]}
+      {:ok, normal} = RustyJson.encode(data, scheduler: :normal)
+      {:ok, dirty} = RustyJson.encode(data, scheduler: :dirty)
+      {:ok, auto} = RustyJson.encode(data, scheduler: :auto)
+      assert normal == dirty
+      assert normal == auto
     end
   end
 
