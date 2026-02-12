@@ -1,7 +1,7 @@
 defmodule RustyJson.MixProject do
   use Mix.Project
 
-  @version "0.3.5"
+  @version "0.3.6"
 
   def project do
     [
@@ -30,7 +30,7 @@ defmodule RustyJson.MixProject do
   defp deps do
     [
       {:rustler_precompiled, "~> 0.8"},
-      {:rustler, "~> 0.37.0", only: [:dev, :test], optional: true, runtime: false},
+      {:rustler, "~> 0.37", optional: true},
       {:decimal, "~> 2.0", optional: true},
       {:ex_doc, "~> 0.30", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
@@ -41,8 +41,7 @@ defmodule RustyJson.MixProject do
   # Benchmark-only deps — remove this block when no longer needed
   defp bench_deps do
     [
-      {:benchee, "~> 1.0", only: [:dev, :test], runtime: false},
-      {:jason, "~> 1.4", only: [:dev, :test], runtime: false}
+      {:benchee, "~> 1.0", only: [:dev, :test], runtime: false}
     ]
   end
 
@@ -68,7 +67,10 @@ defmodule RustyJson.MixProject do
     [
       maintainers: ["Jeff Huen"],
       licenses: ["MIT"],
-      links: %{"GitHub" => "https://github.com/jeffhuen/rustyjson"},
+      links: %{
+        "GitHub" => "https://github.com/jeffhuen/rustyjson",
+        "Changelog" => "https://hexdocs.pm/rustyjson/changelog.html"
+      },
       files: [
         "lib",
         "mix.exs",

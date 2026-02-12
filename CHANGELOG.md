@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] - 2026-02-11
+
+### Fixed
+
+- **Alpine Linux / musl compatibility** — Fixed a NIF loading crash on Alpine Linux caused by `mimalloc`'s default `initial-exec` TLS model. The build configuration now automatically enables `mimalloc`'s `local_dynamic_tls` feature when compiling for `musl` targets, ensuring correct behavior on Alpine while preserving maximum performance on other platforms.
+
 ## [0.3.5] - 2026-02-01
 
 Major backend refactor: the Rust core was rewritten for safety, stability, and performance. All architecture-specific SIMD intrinsics replaced with portable `std::simd`, eliminating all `unsafe` code. No API breaking changes — the Elixir interface is fully backwards-compatible with 0.3.4.
