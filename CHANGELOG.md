@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.8] - 2026-02-12
+
+### Fixed
+
+- **Duplicate key corruption** — Fixed a critical bug where JSON objects containing duplicate keys had their entire parse result corrupted. Non-duplicate keys were silently dropped and values were assigned to wrong keys (e.g., `{"a": 1, "b": 2, "b": 3, "c": 4}` decoded to `%{"a" => 4}` instead of `%{"a" => 1, "b" => 3, "c" => 4}`). Root cause: `build_map_with_duplicates` decoded key Terms as `Vec<u8>` (Erlang list type) instead of `Binary`, causing all keys to silently decode to empty bytes via `unwrap_or_default()` and collapse into a single entry. The fix uses zero-copy `Binary::as_slice()` references into the BEAM heap, which is also faster than the original intended `HashMap<Vec<u8>>` approach.
+
+### Testing
+
+- **Strengthened duplicate key test coverage** — Existing tests only used all-duplicate inputs (e.g., `{"a": 1, "a": 2}`) which accidentally produced correct results despite the bug. Added tests with mixed duplicate and unique keys to catch key-collapse regressions.
+- **Tightened assertions across test suite** — Replaced `=` (Elixir subset match on maps) with `==` (exact equality) in map result assertions, replaced field-by-field checks with full map equality, and strengthened `{:error, _}` wildcards to verify `%RustyJson.DecodeError{}` struct type. These changes ensure tests fail on missing keys, extra keys, or wrong error types.
+
 ## [0.3.7] - 2026-02-12
 
 ### Fixed
@@ -348,6 +359,9 @@ No regressions. Relative speedup vs Jason is unchanged from v0.2.0.
 - Zero-copy string handling in decoder for unescaped strings
 - SIMD-accelerated escape scanning via portable `std::simd`
 
+[0.3.8]: https://github.com/jeffhuen/rustyjson/compare/v0.3.7...v0.3.8
+[0.3.7]: https://github.com/jeffhuen/rustyjson/compare/v0.3.6...v0.3.7
+[0.3.6]: https://github.com/jeffhuen/rustyjson/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/jeffhuen/rustyjson/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/jeffhuen/rustyjson/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/jeffhuen/rustyjson/compare/v0.3.2...v0.3.3

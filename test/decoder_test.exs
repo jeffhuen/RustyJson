@@ -72,8 +72,8 @@ defmodule DecoderTest do
 
     # Leading zeros should be rejected
     test "rejects leading zeros" do
-      assert {:error, _} = RustyJson.decode("01")
-      assert {:error, _} = RustyJson.decode("00")
+      assert {:error, %RustyJson.DecodeError{}} = RustyJson.decode("01")
+      assert {:error, %RustyJson.DecodeError{}} = RustyJson.decode("00")
     end
 
     # === Strings ===
@@ -140,9 +140,9 @@ defmodule DecoderTest do
     test "rejects unescaped control characters" do
       # Control characters (0x00-0x1F) must be escaped
       # "\x00"
-      assert {:error, _} = RustyJson.decode(<<34, 0, 34>>)
+      assert {:error, %RustyJson.DecodeError{}} = RustyJson.decode(<<34, 0, 34>>)
       # literal newline
-      assert {:error, _} = RustyJson.decode(<<34, 10, 34>>)
+      assert {:error, %RustyJson.DecodeError{}} = RustyJson.decode(<<34, 10, 34>>)
     end
 
     # === Arrays ===
@@ -205,7 +205,17 @@ defmodule DecoderTest do
       # RFC 8259 says keys SHOULD be unique, but doesn't forbid duplicates
       # We use "last wins" semantics like most parsers
       result = RustyJson.decode!(~s({"a": 1, "a": 2}))
-      assert result["a"] == 2
+      assert result == %{"a" => 2}
+    end
+
+    test "object with duplicate keys preserves non-duplicate keys" do
+      result = RustyJson.decode!(~s({"a": 1, "b": 2, "b": 3, "c": 4}))
+      assert result == %{"a" => 1, "b" => 3, "c" => 4}
+    end
+
+    test "object with duplicate keys at end preserves earlier keys" do
+      result = RustyJson.decode!(~s({"a": 1, "b": 2, "b": 3}))
+      assert result == %{"a" => 1, "b" => 3}
     end
 
     # === Whitespace ===
@@ -227,24 +237,24 @@ defmodule DecoderTest do
 
     # === Error cases ===
     test "rejects trailing comma in array" do
-      assert {:error, _} = RustyJson.decode("[1,]")
+      assert {:error, %RustyJson.DecodeError{}} = RustyJson.decode("[1,]")
     end
 
     test "rejects trailing comma in object" do
-      assert {:error, _} = RustyJson.decode(~s({"a": 1,}))
+      assert {:error, %RustyJson.DecodeError{}} = RustyJson.decode(~s({"a": 1,}))
     end
 
     test "rejects single quotes" do
-      assert {:error, _} = RustyJson.decode("'hello'")
+      assert {:error, %RustyJson.DecodeError{}} = RustyJson.decode("'hello'")
     end
 
     test "rejects unquoted keys" do
-      assert {:error, _} = RustyJson.decode("{a: 1}")
+      assert {:error, %RustyJson.DecodeError{}} = RustyJson.decode("{a: 1}")
     end
 
     test "rejects trailing content" do
-      assert {:error, _} = RustyJson.decode("123abc")
-      assert {:error, _} = RustyJson.decode("true false")
+      assert {:error, %RustyJson.DecodeError{}} = RustyJson.decode("123abc")
+      assert {:error, %RustyJson.DecodeError{}} = RustyJson.decode("true false")
     end
 
     test "rejects garbage between value and comma in large object (structural index path)" do
@@ -257,12 +267,12 @@ defmodule DecoderTest do
       # The marker "999," is unambiguous — no other value contains "999"
       invalid = String.replace(valid, "999,", "999x,")
       refute valid == invalid
-      assert {:error, _} = RustyJson.decode(invalid)
+      assert {:error, %RustyJson.DecodeError{}} = RustyJson.decode(invalid)
 
       # Same pattern must also be rejected on small input (no structural index)
       small = ~s({"a":1x,"b":2})
       assert byte_size(small) < 256
-      assert {:error, _} = RustyJson.decode(small)
+      assert {:error, %RustyJson.DecodeError{}} = RustyJson.decode(small)
     end
 
     test "rejects garbage between value and closing brace in large object (structural index path)" do
@@ -281,11 +291,11 @@ defmodule DecoderTest do
       # Inject 'x' between value and closing brace: 999x}
       invalid = String.replace(valid, "999}", "999x}")
       refute valid == invalid
-      assert {:error, _} = RustyJson.decode(invalid)
+      assert {:error, %RustyJson.DecodeError{}} = RustyJson.decode(invalid)
 
       # Same rejection on small input
       small = ~s({"a":1x})
-      assert {:error, _} = RustyJson.decode(small)
+      assert {:error, %RustyJson.DecodeError{}} = RustyJson.decode(small)
     end
 
     test "rejects garbage between key and colon in large object (structural index path)" do
@@ -295,11 +305,11 @@ defmodule DecoderTest do
       # Inject 'x' between key and colon: "target"x:999
       invalid = String.replace(valid, ~s("target":), ~s("target"x:))
       refute valid == invalid
-      assert {:error, _} = RustyJson.decode(invalid)
+      assert {:error, %RustyJson.DecodeError{}} = RustyJson.decode(invalid)
 
       # Same rejection on small input
       small = ~s({"a"x:1})
-      assert {:error, _} = RustyJson.decode(small)
+      assert {:error, %RustyJson.DecodeError{}} = RustyJson.decode(small)
     end
 
     test "rejects garbage between value and comma in large array (structural index path)" do
@@ -310,11 +320,11 @@ defmodule DecoderTest do
       # Inject 'x' after 222: unambiguous since no padding contains "222"
       invalid = String.replace(valid, "222,", "222x,")
       refute valid == invalid
-      assert {:error, _} = RustyJson.decode(invalid)
+      assert {:error, %RustyJson.DecodeError{}} = RustyJson.decode(invalid)
 
       # Same rejection on small input
       small = "[1x,2]"
-      assert {:error, _} = RustyJson.decode(small)
+      assert {:error, %RustyJson.DecodeError{}} = RustyJson.decode(small)
     end
 
     test "correctly parses large arrays with mixed nesting" do
@@ -352,15 +362,15 @@ defmodule DecoderTest do
     end
 
     test "rejects incomplete array" do
-      assert {:error, _} = RustyJson.decode("[1, 2")
+      assert {:error, %RustyJson.DecodeError{}} = RustyJson.decode("[1, 2")
     end
 
     test "rejects incomplete object" do
-      assert {:error, _} = RustyJson.decode(~s({"a": 1))
+      assert {:error, %RustyJson.DecodeError{}} = RustyJson.decode(~s({"a": 1))
     end
 
     test "rejects incomplete string" do
-      assert {:error, _} = RustyJson.decode(~s("hello))
+      assert {:error, %RustyJson.DecodeError{}} = RustyJson.decode(~s("hello))
     end
 
     # === Nesting depth limit ===
@@ -407,30 +417,30 @@ defmodule DecoderTest do
     test "decodes array of objects correctly" do
       json = ~s([{"id":1,"name":"a"},{"id":2,"name":"b"}])
 
-      assert [%{"id" => 1, "name" => "a"}, %{"id" => 2, "name" => "b"}] =
-               RustyJson.decode!(json, keys: :intern)
+      assert RustyJson.decode!(json, keys: :intern) ==
+               [%{"id" => 1, "name" => "a"}, %{"id" => 2, "name" => "b"}]
     end
 
     test "handles empty objects" do
-      assert [%{}, %{}] = RustyJson.decode!("[{},{}]", keys: :intern)
+      assert RustyJson.decode!("[{},{}]", keys: :intern) == [%{}, %{}]
     end
 
     test "handles nested objects" do
       json = ~s([{"user":{"id":1}},{"user":{"id":2}}])
       result = RustyJson.decode!(json, keys: :intern)
-      assert [%{"user" => %{"id" => 1}}, %{"user" => %{"id" => 2}}] = result
+      assert result == [%{"user" => %{"id" => 1}}, %{"user" => %{"id" => 2}}]
     end
 
     test "handles escaped keys (not interned but still correct)" do
       json = ~s([{"key\\nwith\\nnewlines":1},{"key\\nwith\\nnewlines":2}])
       result = RustyJson.decode!(json, keys: :intern)
-      assert [%{"key\nwith\nnewlines" => 1}, %{"key\nwith\nnewlines" => 2}] = result
+      assert result == [%{"key\nwith\nnewlines" => 1}, %{"key\nwith\nnewlines" => 2}]
     end
 
     test "handles unicode escaped keys" do
       json = ~s([{"\\u0069d":1},{"\\u0069d":2}])
       result = RustyJson.decode!(json, keys: :intern)
-      assert [%{"id" => 1}, %{"id" => 2}] = result
+      assert result == [%{"id" => 1}, %{"id" => 2}]
     end
 
     test "interned keys share binary references across objects" do
@@ -467,19 +477,23 @@ defmodule DecoderTest do
 
     test "handles duplicate keys (last wins)" do
       # Even with interning, duplicate keys should follow JSON semantics (last one wins)
-      json = ~s([{"a": 1, "a": 2}, {"b": 3, "b": 4}])
-      assert [%{"a" => 2}, %{"b" => 4}] = RustyJson.decode!(json, keys: :intern)
+      # Include unique keys alongside duplicates to catch key-collapse bugs
+      # Use == (not =) because Elixir's = on maps is a subset match that ignores extra keys
+      json = ~s([{"a": 1, "x": 99, "a": 2}, {"b": 3, "y": 88, "b": 4}])
+
+      assert RustyJson.decode!(json, keys: :intern) ==
+               [%{"a" => 2, "x" => 99}, %{"b" => 4, "y" => 88}]
     end
 
     test "handles empty keys" do
       json = ~s([{"": 1}, {"": 2}])
-      assert [%{"" => 1}, %{"" => 2}] = RustyJson.decode!(json, keys: :intern)
+      assert RustyJson.decode!(json, keys: :intern) == [%{"" => 1}, %{"" => 2}]
     end
 
     test "handles repeated keys at different nesting levels" do
       # "id" appears at top level and nested level
       json = ~s([{"id": 1, "nested": {"id": 2}}])
-      assert [%{"id" => 1, "nested" => %{"id" => 2}}] = RustyJson.decode!(json, keys: :intern)
+      assert RustyJson.decode!(json, keys: :intern) == [%{"id" => 1, "nested" => %{"id" => 2}}]
     end
   end
 
@@ -717,7 +731,9 @@ defmodule DecoderTest do
       assert {:ok, 12_345} = RustyJson.decode(json, decoding_integer_digit_limit: 5)
 
       json = ~s(123456)
-      assert {:error, _} = RustyJson.decode(json, decoding_integer_digit_limit: 5)
+
+      assert {:error, %RustyJson.DecodeError{}} =
+               RustyJson.decode(json, decoding_integer_digit_limit: 5)
     end
 
     test "digit limit of 0 disables the check" do
@@ -726,7 +742,9 @@ defmodule DecoderTest do
       big_num = String.duplicate("9", 2000)
       json = big_num
       # First verify it would fail with the default limit
-      assert {:error, _} = RustyJson.decode(json, decoding_integer_digit_limit: 1024)
+      assert {:error, %RustyJson.DecodeError{}} =
+               RustyJson.decode(json, decoding_integer_digit_limit: 1024)
+
       # Now verify limit=0 allows it
       assert {:ok, result} = RustyJson.decode(json, decoding_integer_digit_limit: 0)
       assert result == String.to_integer(big_num)

@@ -71,13 +71,13 @@ defmodule SafetyTest do
 
     test "max_bytes check works with iodata input" do
       iodata = [~s("), String.duplicate("x", 500), ~s(")]
-      assert {:error, _} = RustyJson.decode(iodata, max_bytes: 100)
+      assert {:error, %RustyJson.DecodeError{}} = RustyJson.decode(iodata, max_bytes: 100)
     end
 
     test "max_bytes at exact boundary" do
       # 7 bytes: quote + hello + quote
       assert {:ok, "hello"} = RustyJson.decode(~s("hello"), max_bytes: 7)
-      assert {:error, _} = RustyJson.decode(~s("hello"), max_bytes: 6)
+      assert {:error, %RustyJson.DecodeError{}} = RustyJson.decode(~s("hello"), max_bytes: 6)
     end
   end
 
@@ -92,23 +92,23 @@ defmodule SafetyTest do
     end
 
     test "duplicate_keys: :error accepts unique keys" do
-      assert {:ok, %{"a" => 1, "b" => 2}} =
-               RustyJson.decode(~s({"a":1,"b":2}), duplicate_keys: :error)
+      assert RustyJson.decode(~s({"a":1,"b":2}), duplicate_keys: :error) ==
+               {:ok, %{"a" => 1, "b" => 2}}
     end
 
     test "duplicate_keys: :error catches nested duplicates" do
-      assert {:error, _} =
+      assert {:error, %RustyJson.DecodeError{}} =
                RustyJson.decode(~s({"a":{"b":1,"b":2}}), duplicate_keys: :error)
     end
 
     test "duplicate_keys: :error catches duplicates in array of objects" do
-      assert {:error, _} =
+      assert {:error, %RustyJson.DecodeError{}} =
                RustyJson.decode(~s([{"a":1,"a":2}]), duplicate_keys: :error)
     end
 
     test "duplicate_keys: :error allows same key in different objects" do
-      assert {:ok, [%{"a" => 1}, %{"a" => 2}]} =
-               RustyJson.decode(~s([{"a":1},{"a":2}]), duplicate_keys: :error)
+      assert RustyJson.decode(~s([{"a":1},{"a":2}]), duplicate_keys: :error) ==
+               {:ok, [%{"a" => 1}, %{"a" => 2}]}
     end
   end
 

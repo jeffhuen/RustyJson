@@ -1597,15 +1597,18 @@ impl<'a, 'b> DirectParser<'a, 'b> {
         pos: usize,
     ) -> Result<Term<'a>, DecodeError> {
         // Extract key bytes and deduplicate
-        let mut key_map: HashMap<Vec<u8>, usize> = HashMap::with_capacity(keys.len());
+        let mut key_map: HashMap<&'a [u8], usize> = HashMap::with_capacity(keys.len());
         let mut final_keys = Vec::with_capacity(keys.len());
         let mut final_values = Vec::with_capacity(keys.len());
 
         for (i, key) in keys.iter().enumerate() {
-            // Get the binary bytes from the key term
-            let key_bytes: Vec<u8> = key.decode().unwrap_or_default();
+            // Decode as Binary to get a slice into the BEAM heap (no allocation)
+            let key_bin: Binary = key
+                .decode()
+                .map_err(|_| (Cow::Borrowed("Failed to decode key"), pos))?;
+            let key_bytes = key_bin.as_slice();
 
-            if let Some(&existing_idx) = key_map.get(&key_bytes) {
+            if let Some(&existing_idx) = key_map.get(key_bytes) {
                 // Duplicate - update value at existing position
                 final_values[existing_idx] = values[i];
             } else {

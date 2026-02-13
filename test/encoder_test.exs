@@ -371,17 +371,13 @@ defmodule EncoderTest do
     test "derive with :only excludes unspecified fields" do
       val = %DerivedOnly{name: "Alice", age: 30, secret: "hidden"}
       decoded = RustyJson.decode!(RustyJson.encode!(val))
-      assert decoded["name"] == "Alice"
-      assert decoded["age"] == 30
-      refute Map.has_key?(decoded, "secret")
+      assert decoded == %{"name" => "Alice", "age" => 30}
     end
 
     test "derive with :except excludes specified fields" do
       val = %DerivedExcept{name: "Alice", age: 30, secret: "hidden"}
       decoded = RustyJson.decode!(RustyJson.encode!(val))
-      assert decoded["name"] == "Alice"
-      assert decoded["age"] == 30
-      refute Map.has_key?(decoded, "secret")
+      assert decoded == %{"name" => "Alice", "age" => 30}
     end
   end
 
@@ -525,10 +521,16 @@ defmodule EncoderTest do
   describe "derived struct encoding" do
     test "all field types round-trip correctly" do
       decoded = RustyJson.decode!(RustyJson.encode!(@nif_person))
-      assert decoded["name"] == "Alice"
-      assert decoded["email"] == "alice@example.com"
-      assert decoded["age"] == 30
-      assert decoded["active"] == true
+
+      assert decoded == %{
+               "name" => "Alice",
+               "email" => "alice@example.com",
+               "city" => "Portland",
+               "country" => "US",
+               "bio" => "Hello world",
+               "age" => 30,
+               "active" => true
+             }
     end
 
     test "strings with special characters round-trip correctly" do
@@ -547,23 +549,43 @@ defmodule EncoderTest do
     test "nil field encodes as JSON null (key is present)" do
       person = %NifPerson{@nif_person | bio: nil}
       decoded = RustyJson.decode!(RustyJson.encode!(person))
-      assert Map.has_key?(decoded, "bio")
-      assert decoded["bio"] == nil
+
+      assert decoded == %{
+               "name" => "Alice",
+               "email" => "alice@example.com",
+               "city" => "Portland",
+               "country" => "US",
+               "bio" => nil,
+               "age" => 30,
+               "active" => true
+             }
     end
 
     test "boolean false encodes as JSON false (not absent)" do
       person = %NifPerson{@nif_person | active: false}
       decoded = RustyJson.decode!(RustyJson.encode!(person))
-      assert Map.has_key?(decoded, "active")
-      assert decoded["active"] == false
+
+      assert decoded == %{
+               "name" => "Alice",
+               "email" => "alice@example.com",
+               "city" => "Portland",
+               "country" => "US",
+               "bio" => "Hello world",
+               "age" => 30,
+               "active" => false
+             }
     end
 
     test "float fields round-trip correctly" do
       person = %NifPerson{@nif_person | age: 30.5}
-      assert RustyJson.decode!(RustyJson.encode!(person))["age"] == 30.5
+      decoded = RustyJson.decode!(RustyJson.encode!(person))
+      assert decoded["age"] == 30.5
+      assert map_size(decoded) == 7
 
       person = %NifPerson{@nif_person | age: 0.1}
-      assert RustyJson.decode!(RustyJson.encode!(person))["age"] == 0.1
+      decoded = RustyJson.decode!(RustyJson.encode!(person))
+      assert decoded["age"] == 0.1
+      assert map_size(decoded) == 7
     end
 
     test "non-boolean atom values encode as strings" do
@@ -577,8 +599,15 @@ defmodule EncoderTest do
       }
 
       decoded = RustyJson.decode!(RustyJson.encode!(nested))
-      assert decoded["tags"] == ["ok", "error"]
-      assert decoded["metadata"]["status"] == "active"
+
+      assert decoded == %{
+               "name" => "test",
+               "email" => "a@b.com",
+               "score" => 10,
+               "tags" => ["ok", "error"],
+               "metadata" => %{"status" => "active"},
+               "inner" => nil
+             }
     end
 
     test "nested derived struct" do
@@ -592,9 +621,15 @@ defmodule EncoderTest do
       }
 
       decoded = RustyJson.decode!(RustyJson.encode!(nested))
-      assert decoded["name"] == "outer"
-      assert decoded["inner"]["label"] == "inner"
-      assert decoded["inner"]["value"] == 99
+
+      assert decoded == %{
+               "name" => "outer",
+               "email" => "o@o.com",
+               "score" => 42,
+               "tags" => ["a", "b"],
+               "metadata" => %{"x" => 1},
+               "inner" => %{"label" => "inner", "value" => 99}
+             }
     end
 
     test "nested custom defimpl struct" do
@@ -622,7 +657,15 @@ defmodule EncoderTest do
       }
 
       decoded = RustyJson.decode!(RustyJson.encode!(nested))
-      assert decoded["inner"]["pre"] == "encoded"
+
+      assert decoded == %{
+               "name" => "test",
+               "email" => "t@t.com",
+               "score" => 1,
+               "tags" => [],
+               "metadata" => %{},
+               "inner" => %{"pre" => "encoded"}
+             }
     end
 
     test "list and map fields with mixed primitives" do
@@ -636,9 +679,15 @@ defmodule EncoderTest do
       }
 
       decoded = RustyJson.decode!(RustyJson.encode!(nested))
-      assert decoded["tags"] == ["hello", 42, true, nil]
-      assert decoded["metadata"]["a"] == 1
-      assert decoded["metadata"]["b"] == "two"
+
+      assert decoded == %{
+               "name" => "test",
+               "email" => "t@t.com",
+               "score" => 1,
+               "tags" => ["hello", 42, true, nil],
+               "metadata" => %{"a" => 1, "b" => "two"},
+               "inner" => nil
+             }
     end
   end
 
@@ -673,7 +722,10 @@ defmodule EncoderTest do
       decoded = RustyJson.decode!(lean)
       # Lean mode should produce a map with struct fields, not an ISO8601 string
       assert is_map(decoded)
-      assert %{"hour" => 12, "minute" => 0, "second" => 0} = decoded
+      assert decoded["hour"] == 12
+      assert decoded["minute"] == 0
+      assert decoded["second"] == 0
+      assert map_size(decoded) == map_size(Map.from_struct(~T[12:00:00]))
     end
 
     test "DateTime encodes as raw map" do
@@ -682,6 +734,7 @@ defmodule EncoderTest do
       assert decoded["year"] == 2024
       # __struct__ is always stripped by the NIF
       refute Map.has_key?(decoded, "__struct__")
+      assert map_size(decoded) == map_size(Map.from_struct(dt))
     end
 
     test "Date encodes as raw map" do
@@ -690,12 +743,14 @@ defmodule EncoderTest do
       assert decoded["month"] == 1
       assert decoded["day"] == 15
       refute Map.has_key?(decoded, "__struct__")
+      assert map_size(decoded) == map_size(Map.from_struct(~D[2024-01-15]))
     end
 
     test "NaiveDateTime encodes as raw map" do
       decoded = RustyJson.decode!(RustyJson.encode!(~N[2024-01-15 14:30:00], lean: true))
       assert decoded["year"] == 2024
       assert decoded["hour"] == 14
+      assert map_size(decoded) == map_size(Map.from_struct(~N[2024-01-15 14:30:00]))
     end
 
     test "URI encodes as raw map" do
@@ -703,6 +758,7 @@ defmodule EncoderTest do
       decoded = RustyJson.decode!(RustyJson.encode!(uri, lean: true))
       assert decoded["host"] == "example.com"
       assert decoded["scheme"] == "http"
+      assert map_size(decoded) == map_size(Map.from_struct(uri))
     end
   end
 
