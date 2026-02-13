@@ -116,7 +116,50 @@ defimpl Enumerable, for: RustyJson.OrderedObject do
 end
 
 defimpl RustyJson.Encoder, for: RustyJson.OrderedObject do
-  def encode(%RustyJson.OrderedObject{values: values}, opts) do
-    %RustyJson.Fragment{encode: fn _ -> RustyJson.Encode.keyword(values, opts) end}
+  # Pass through to Rust for native formatting with proper pretty-printing.
+  # Only pre-process values when they contain structs/tuples that need
+  # Encoder protocol dispatch; otherwise return as-is (zero allocation).
+  def encode(%RustyJson.OrderedObject{values: values} = obj, opts) do
+    if needs_encoding?(values) do
+      %RustyJson.OrderedObject{values: preprocess_values(values, opts)}
+    else
+      obj
+    end
+  end
+
+  defp needs_encoding?([]), do: false
+  defp needs_encoding?([{_k, %{__struct__: _}} | _rest]), do: true
+  defp needs_encoding?([{_k, v} | _rest]) when is_tuple(v), do: true
+
+  defp needs_encoding?([{_k, v} | rest]) when is_map(v) do
+    has_struct_key?(v) or needs_encoding?(rest)
+  end
+
+  defp needs_encoding?([{_k, v} | rest]) when is_list(v) do
+    needs_encoding_list?(v) or needs_encoding?(rest)
+  end
+
+  defp needs_encoding?([{_k, _v} | rest]), do: needs_encoding?(rest)
+
+  defp has_struct_key?(map), do: :maps.is_key(:__struct__, map)
+
+  defp needs_encoding_list?([]), do: false
+  defp needs_encoding_list?([%{__struct__: _} | _]), do: true
+  defp needs_encoding_list?([v | _]) when is_tuple(v), do: true
+
+  defp needs_encoding_list?([v | rest]) when is_map(v) do
+    has_struct_key?(v) or needs_encoding_list?(rest)
+  end
+
+  defp needs_encoding_list?([v | rest]) when is_list(v) do
+    needs_encoding_list?(v) or needs_encoding_list?(rest)
+  end
+
+  defp needs_encoding_list?([_ | rest]), do: needs_encoding_list?(rest)
+
+  defp preprocess_values([], _opts), do: []
+
+  defp preprocess_values([{k, v} | rest], opts) do
+    [{k, RustyJson.Encoder.encode(v, opts)} | preprocess_values(rest, opts)]
   end
 end

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7] - 2026-02-12
+
+### Fixed
+
+- **OrderedObject pretty-printing** — `OrderedObject` now produces properly indented multi-line output with `pretty: true`. Previously, encoding always returned compact single-line JSON because the Encoder produced a `Fragment` that bypassed the NIF's inline pretty-printing. OrderedObject is now handled as a native struct in Rust, formatting directly from the `values` tuple list with zero intermediate serialization.
+
+- **Fragment pretty-printing** — Pre-encoded `Fragment` content is now reformatted with depth-aware indentation when `pretty: true` is active. This fixes pretty-printing for any struct values nested inside Maps or Lists (e.g., `%{data: %OrderedObject{...}}`). The reformatter streams through iodata byte-by-byte with zero buffer allocation, matching Jason's behavior where the Formatter reformats all output uniformly.
+
 ## [0.3.6] - 2026-02-11
 
 ### Fixed

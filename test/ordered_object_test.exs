@@ -227,6 +227,44 @@ defmodule OrderedObjectTest do
       pretty = RustyJson.Formatter.pretty_print(compact)
       assert pretty =~ ~r/"z".*"a"/s
     end
+
+    test "pretty: true produces multi-line indented output" do
+      obj = %RustyJson.OrderedObject{values: [{"b", 2}, {"a", 1}]}
+      result = RustyJson.encode!(obj, pretty: true)
+      expected = "{\n  \"b\": 2,\n  \"a\": 1\n}"
+      assert result == expected
+    end
+
+    test "pretty: true with nested ordered object" do
+      inner = %RustyJson.OrderedObject{values: [{"x", 10}]}
+      outer = %RustyJson.OrderedObject{values: [{"nested", inner}, {"top", true}]}
+      result = RustyJson.encode!(outer, pretty: true)
+      expected = "{\n  \"nested\": {\n    \"x\": 10\n  },\n  \"top\": true\n}"
+      assert result == expected
+    end
+
+    test "pretty: true with ordered object inside a map" do
+      obj = %RustyJson.OrderedObject{values: [{"b", 2}, {"a", 1}]}
+      result = RustyJson.encode!(%{data: obj}, pretty: true)
+      assert result =~ "\"b\": 2"
+      assert result =~ "\"a\": 1"
+      assert result =~ "\n"
+    end
+
+    test "pretty: true with ordered object inside a list" do
+      obj = %RustyJson.OrderedObject{values: [{"b", 2}, {"a", 1}]}
+      result = RustyJson.encode!([obj], pretty: true)
+      expected = "[\n  {\n    \"b\": 2,\n    \"a\": 1\n  }\n]"
+      assert result == expected
+    end
+
+    test "pretty: true round-trip preserves order" do
+      json = ~s({"z":26,"m":13,"a":1})
+      obj = RustyJson.decode!(json, objects: :ordered_objects)
+      result = RustyJson.encode!(obj, pretty: true)
+      expected = "{\n  \"z\": 26,\n  \"m\": 13,\n  \"a\": 1\n}"
+      assert result == expected
+    end
   end
 
   describe "invalid objects option" do

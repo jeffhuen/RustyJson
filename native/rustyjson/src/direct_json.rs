@@ -640,8 +640,13 @@ fn try_format_special_struct_from_name<W: Write>(
                 return Ok(Some(()));
             }
         }
+        "Elixir.RustyJson.OrderedObject" => {
+            if let Some(()) = try_format_ordered_object(term, writer, opts)? {
+                return Ok(Some(()));
+            }
+        }
         "Elixir.RustyJson.Fragment" | "Elixir.Jason.Fragment" => {
-            if let Some(()) = try_format_fragment(term, writer)? {
+            if let Some(()) = try_format_fragment(term, writer, opts)? {
                 return Ok(Some(()));
             }
         }
@@ -651,10 +656,121 @@ fn try_format_special_struct_from_name<W: Write>(
     Ok(None)
 }
 
-/// Format pre-encoded JSON fragment
+/// Format OrderedObject as a JSON object preserving key order with proper pretty-printing.
+/// The `values` field is a list of {key, value} 2-tuples.
+fn try_format_ordered_object<W: Write>(
+    term: &Term,
+    writer: &mut W,
+    opts: FormatOptions<'_>,
+) -> Result<Option<()>, std::io::Error> {
+    let env = term.get_env();
+    let t = *term;
+
+    // Get the "values" field
+    let values_term = match t.map_get(crate::atoms::values().to_term(env)) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+
+    // Empty list → {}
+    if values_term.is_empty_list() {
+        writer.write_all(b"{}")?;
+        return Ok(Some(()));
+    }
+
+    let nested = opts.nested();
+    let escape = opts.escape_mode();
+
+    writer.write_all(b"{")?;
+
+    let mut first = true;
+    let mut current = values_term;
+    while let Ok((head, tail)) = current.list_get_cell() {
+        // Each element is a {key, value} tuple
+        let items = rustler::types::tuple::get_tuple(head).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "OrderedObject value must be a tuple",
+            )
+        })?;
+        if items.len() != 2 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "OrderedObject value must be a 2-tuple",
+            ));
+        }
+
+        let key = items[0];
+        let value = items[1];
+
+        if !first {
+            writer.write_all(b",")?;
+        }
+        first = false;
+        nested.write_newline(writer)?;
+
+        // Write key as JSON string (handle atom, binary, and integer keys)
+        match key.get_type() {
+            TermType::Atom => {
+                let key_str = key.atom_to_string().map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Failed to decode atom key",
+                    )
+                })?;
+                write_json_string(&key_str, writer, escape)?;
+            }
+            TermType::Binary => {
+                let binary: Binary = key.decode().map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Failed to decode binary key",
+                    )
+                })?;
+                let s = std::str::from_utf8(binary.as_slice()).map_err(|_| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "Non-UTF8 binary key")
+                })?;
+                write_json_string(s, writer, escape)?;
+            }
+            TermType::Integer => {
+                if let Ok(n) = key.decode::<i64>() {
+                    let mut buf = itoa::Buffer::new();
+                    let key_str = buf.format(n);
+                    write_json_string(key_str, writer, escape)?;
+                } else {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Failed to decode integer key",
+                    ));
+                }
+            }
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "OrderedObject key must be atom, string, or integer",
+                ));
+            }
+        }
+
+        writer.write_all(b":")?;
+        nested.write_space(writer)?;
+        term_to_json(value, writer, nested)?;
+
+        current = tail;
+    }
+
+    opts.write_newline(writer)?;
+    writer.write_all(b"}")?;
+    Ok(Some(()))
+}
+
+/// Format pre-encoded JSON fragment.
+/// When pretty-printing is active, reformats the compact iodata with proper
+/// depth-aware indentation (streaming, zero-allocation). Otherwise dumps as-is.
 fn try_format_fragment<W: Write>(
     term: &Term,
     writer: &mut W,
+    opts: FormatOptions<'_>,
 ) -> Result<Option<()>, std::io::Error> {
     let env = term.get_env();
     let t = *term;
@@ -665,8 +781,158 @@ fn try_format_fragment<W: Write>(
         Err(_) => return Ok(None),
     };
 
-    write_iodata(writer, encode_term)?;
+    if opts.is_pretty() {
+        let mut state = ReformatState {
+            depth: opts.depth,
+            in_string: false,
+            escape_next: false,
+            pending_newline: false,
+            ctx: opts.ctx,
+        };
+        reformat_iodata(writer, encode_term, &mut state)?;
+    } else {
+        write_iodata(writer, encode_term)?;
+    }
     Ok(Some(()))
+}
+
+/// State for the streaming JSON reformatter.
+struct ReformatState<'ctx> {
+    depth: u32,
+    in_string: bool,
+    escape_next: bool,
+    /// Deferred newline+indent after `{`, `[`, or `,`.
+    /// Lets us detect empty containers `{}` / `[]` without look-ahead.
+    pending_newline: bool,
+    ctx: &'ctx FormatContext,
+}
+
+impl<'ctx> ReformatState<'ctx> {
+    #[inline(always)]
+    fn write_indent<W: Write>(&self, writer: &mut W) -> Result<(), std::io::Error> {
+        writer.write_all(&self.ctx.line_separator)?;
+        let indent = &self.ctx.indent;
+        for _ in 0..self.depth {
+            writer.write_all(indent)?;
+        }
+        Ok(())
+    }
+
+    /// Flush the pending newline if set, emitting newline + indent at current depth.
+    #[inline(always)]
+    fn flush_pending<W: Write>(&mut self, writer: &mut W) -> Result<(), std::io::Error> {
+        if self.pending_newline {
+            self.write_indent(writer)?;
+            self.pending_newline = false;
+        }
+        Ok(())
+    }
+}
+
+/// Walk iodata, feeding each byte through the reformatter (streaming, no buffer).
+fn reformat_iodata<W: Write>(
+    writer: &mut W,
+    term: Term,
+    state: &mut ReformatState<'_>,
+) -> Result<(), std::io::Error> {
+    if term.is_binary() {
+        let binary: Binary = term.decode().map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "Failed to decode binary")
+        })?;
+        reformat_bytes(writer, binary.as_slice(), state)?;
+    } else if term.is_list() {
+        let mut current = term;
+        while let Ok((head, tail)) = current.list_get_cell() {
+            reformat_iodata(writer, head, state)?;
+            current = tail;
+        }
+        if !current.is_empty_list() {
+            reformat_iodata(writer, current, state)?;
+        }
+    } else if let Ok(byte) = term.decode::<u8>() {
+        reformat_one_byte(writer, byte, state)?;
+    }
+    Ok(())
+}
+
+/// Reformat a slice of JSON bytes with proper indentation.
+#[inline]
+fn reformat_bytes<W: Write>(
+    writer: &mut W,
+    bytes: &[u8],
+    state: &mut ReformatState<'_>,
+) -> Result<(), std::io::Error> {
+    for &byte in bytes {
+        reformat_one_byte(writer, byte, state)?;
+    }
+    Ok(())
+}
+
+/// Core reformatter: process one JSON byte, emitting properly indented output.
+#[inline(always)]
+fn reformat_one_byte<W: Write>(
+    writer: &mut W,
+    byte: u8,
+    state: &mut ReformatState<'_>,
+) -> Result<(), std::io::Error> {
+    // Inside an escape sequence — pass through verbatim
+    if state.escape_next {
+        writer.write_all(&[byte])?;
+        state.escape_next = false;
+        return Ok(());
+    }
+
+    // Inside a string — pass through, tracking escape sequences and end-quote
+    if state.in_string {
+        writer.write_all(&[byte])?;
+        if byte == b'\\' {
+            state.escape_next = true;
+        } else if byte == b'"' {
+            state.in_string = false;
+        }
+        return Ok(());
+    }
+
+    // Outside strings — structural JSON formatting
+    match byte {
+        b'"' => {
+            state.flush_pending(writer)?;
+            writer.write_all(b"\"")?;
+            state.in_string = true;
+        }
+        b'{' | b'[' => {
+            state.flush_pending(writer)?;
+            writer.write_all(&[byte])?;
+            state.depth += 1;
+            state.pending_newline = true;
+        }
+        b'}' | b']' => {
+            state.depth -= 1;
+            if state.pending_newline {
+                // Empty container: {} or [] — no newline between brackets
+                state.pending_newline = false;
+            } else {
+                state.write_indent(writer)?;
+            }
+            writer.write_all(&[byte])?;
+        }
+        b',' => {
+            writer.write_all(b",")?;
+            state.pending_newline = true;
+        }
+        b':' => {
+            writer.write_all(b":")?;
+            writer.write_all(&state.ctx.after_colon)?;
+        }
+        // Skip existing whitespace (the input is typically compact, but be safe)
+        b' ' | b'\t' | b'\n' | b'\r' => {}
+        // Any other byte (digits, t/f/n for true/false/null, minus, etc.)
+        _ => {
+            state.flush_pending(writer)?;
+            writer.write_all(&[byte])?;
+        }
+    }
+    Ok(())
 }
 
 /// Write iodata directly to writer
