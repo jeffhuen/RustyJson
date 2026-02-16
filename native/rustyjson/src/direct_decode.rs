@@ -728,8 +728,8 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                         if !hex.iter().all(|&b| b.is_ascii_hexdigit()) {
                             return Err(Cow::Borrowed("Invalid unicode escape"));
                         }
-                        // SAFETY: hex digits were validated above, and valid hex
-                        // ASCII is always valid UTF-8, so these conversions cannot fail.
+                        // Validated hex ASCII is always valid UTF-8, so these
+                        // conversions cannot fail; propagate instead of panicking.
                         let hex_str = std::str::from_utf8(hex)
                             .map_err(|_| Cow::Borrowed("Invalid unicode escape"))?;
                         let cp = u16::from_str_radix(hex_str, 16)
@@ -2042,7 +2042,6 @@ pub mod bench_helpers {
 
 /// Parse JSON directly to Erlang terms without intermediate representation
 #[inline]
-#[must_use = "discarding the decoded term loses the parsing work"]
 pub fn json_to_term<'a>(
     env: Env<'a>,
     input_binary: &Binary<'a>,

@@ -16,9 +16,14 @@ pub fn try_format_decimal(term: &Term) -> Option<String> {
 
     let env = term.get_env();
 
-    // Use pre-interned atoms from crate::atoms instead of Atom::from_str per-call.
-    // The atoms module declares these once at NIF load time; reusing them avoids
-    // repeated hash lookups into the atom table on every Decimal encode.
+    // Verify this is an Elixir.Decimal struct before extracting fields.
+    // Uses pre-interned atoms from crate::atoms instead of Atom::from_str per-call
+    // to avoid repeated atom table lock acquisitions under high throughput.
+    let struct_name = term.map_get(crate::atoms::__struct__().to_term(env)).ok()?;
+    if !struct_name.eq(&crate::atoms::decimal_struct().to_term(env)) {
+        return None;
+    }
+
     let coef_term = term.map_get(crate::atoms::coef().to_term(env)).ok()?;
     let exp_term = term.map_get(crate::atoms::exp().to_term(env)).ok()?;
     let sign_term = term.map_get(crate::atoms::sign().to_term(env)).ok()?;

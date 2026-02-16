@@ -40,7 +40,6 @@ impl Write for Writer {
 
 impl Writer {
     /// Get the final output buffer, consuming self
-    #[must_use = "discarding the compressed output loses the encoding work"]
     pub fn get_buf(self) -> Result<Vec<u8>, Error> {
         match self {
             Writer::Plain(v) => Ok(v),
