@@ -1,6 +1,9 @@
 use rustler::{Binary, Env, OwnedBinary};
 use std::io::{self, Write};
 
+/// Minimum capacity for the backing binary after a growth event.
+const MIN_GROW_CAPACITY: usize = 128;
+
 /// Growable writer backed by a NIF `OwnedBinary`.
 ///
 /// Writes go directly into Erlang-managed memory, eliminating the
@@ -16,7 +19,8 @@ impl NifBinaryWriter {
     /// Create a new writer with the given initial capacity.
     /// Panics if the initial allocation fails (extremely unlikely).
     pub fn new(initial_cap: usize) -> Self {
-        let inner = OwnedBinary::new(initial_cap).expect("OwnedBinary allocation failed");
+        let inner =
+            OwnedBinary::new(initial_cap).expect("OwnedBinary allocation failed");
         Self { inner, pos: 0 }
     }
 
@@ -26,7 +30,7 @@ impl NifBinaryWriter {
         let required = self.pos + additional;
         if required > self.inner.len() {
             // Double or grow to required, whichever is larger
-            let new_cap = required.max(self.inner.len() * 2).max(128);
+            let new_cap = required.max(self.inner.len() * 2).max(MIN_GROW_CAPACITY);
             self.inner.realloc_or_copy(new_cap);
         }
     }
@@ -35,6 +39,7 @@ impl NifBinaryWriter {
     /// Shrinks the allocation to the exact number of bytes written.
     pub fn into_binary(mut self, env: Env) -> Binary {
         if self.pos < self.inner.len() {
+            // Best-effort shrink; if realloc fails we keep the oversized buffer.
             let _ = self.inner.realloc(self.pos);
         }
         self.inner.release(env)

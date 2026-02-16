@@ -11,6 +11,11 @@ pub type DecodeError = (Cow<'static, str>, usize);
 /// Maximum nesting depth to prevent stack overflow
 const MAX_DEPTH: usize = 128;
 
+/// Minimum string length to use a zero-copy sub-binary reference
+/// instead of copying to a heap binary. Below this threshold, the
+/// overhead of the sub-binary indirection exceeds the copy cost.
+const SUBBINARY_THRESHOLD: usize = 64;
+
 // ============================================================================
 // Structural Index - pre-scan for structural JSON characters
 // ============================================================================
@@ -616,7 +621,7 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                     // sub-binary overhead. For longer strings (>=64 bytes),
                     // zero-copy sub-binary avoids allocation + memcpy.
                     let len = end - start;
-                    if len >= 64 {
+                    if len >= SUBBINARY_THRESHOLD {
                         if let Ok(sub) = self.input_binary.make_subbinary(start, len) {
                             return Ok(sub.to_term(self.env));
                         }
@@ -723,8 +728,12 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                         if !hex.iter().all(|&b| b.is_ascii_hexdigit()) {
                             return Err(Cow::Borrowed("Invalid unicode escape"));
                         }
-                        let cp =
-                            u16::from_str_radix(std::str::from_utf8(hex).unwrap(), 16).unwrap();
+                        // Validated hex ASCII is always valid UTF-8, so these
+                        // conversions cannot fail; propagate instead of panicking.
+                        let hex_str = std::str::from_utf8(hex)
+                            .map_err(|_| Cow::Borrowed("Invalid unicode escape"))?;
+                        let cp = u16::from_str_radix(hex_str, 16)
+                            .map_err(|_| Cow::Borrowed("Invalid unicode escape"))?;
 
                         // Handle UTF-16 surrogate pairs
                         if (0xD800..=0xDBFF).contains(&cp) {
@@ -735,9 +744,10 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                             {
                                 let hex2 = &self.input[i + 7..i + 11];
                                 if hex2.iter().all(|&b| b.is_ascii_hexdigit()) {
-                                    let cp2 =
-                                        u16::from_str_radix(std::str::from_utf8(hex2).unwrap(), 16)
-                                            .unwrap();
+                                    let hex2_str = std::str::from_utf8(hex2)
+                                        .map_err(|_| Cow::Borrowed("Invalid unicode escape"))?;
+                                    let cp2 = u16::from_str_radix(hex2_str, 16)
+                                        .map_err(|_| Cow::Borrowed("Invalid unicode escape"))?;
                                     if (0xDC00..=0xDFFF).contains(&cp2) {
                                         // Valid surrogate pair
                                         let full_cp = 0x10000
@@ -994,9 +1004,12 @@ impl<'a, 'b> DirectParser<'a, 'b> {
 
         // Split into integer/fraction and exponent parts
         let (mantissa_str, exp_part) = if let Some(e_pos) = rest.find(['e', 'E']) {
+            let exp_val = rest[e_pos + 1..]
+                .parse::<i64>()
+                .map_err(|_| (Cow::Borrowed("Invalid exponent in decimal number"), start))?;
             (
                 &rest[..e_pos],
-                rest[e_pos + 1..].parse::<i64>().unwrap_or(0),
+                exp_val,
             )
         } else {
             (rest, 0i64)
@@ -1544,21 +1557,25 @@ impl<'a, 'b> DirectParser<'a, 'b> {
 
         self.depth -= 1;
 
-        // Capture shape for subsequent objects
+        // Build map first using keys by reference, then move keys into shape
+        // to avoid an unnecessary .clone() of the Vec<Term>.
+        let result = if self.opts.ordered_objects {
+            self.build_ordered_object(&keys, &values, obj_start)
+        } else {
+            match Term::map_from_term_arrays(self.env, &keys, &values) {
+                Ok(map) => Ok(map),
+                Err(_) => self.build_map_with_duplicates(&keys, &values, obj_start),
+            }
+        };
+
+        // Capture shape for subsequent objects (move, not clone)
         *shape = Some(KeyShape {
             raw_keys,
-            key_terms: keys.clone(),
+            key_terms: keys,
             is_flat,
         });
 
-        if self.opts.ordered_objects {
-            return self.build_ordered_object(&keys, &values, obj_start);
-        }
-
-        match Term::map_from_term_arrays(self.env, &keys, &values) {
-            Ok(map) => Ok(map),
-            Err(_) => self.build_map_with_duplicates(&keys, &values, obj_start),
-        }
+        result
     }
 
     /// Build %RustyJson.OrderedObject{values: [{k, v}, ...]} preserving order.
@@ -1776,16 +1793,22 @@ pub mod bench_helpers {
                         if !hex.iter().all(|&b| b.is_ascii_hexdigit()) {
                             return Err("Invalid unicode escape".to_string());
                         }
-                        let cp =
-                            u16::from_str_radix(std::str::from_utf8(hex).unwrap(), 16).unwrap();
+                        let cp = u16::from_str_radix(
+                            std::str::from_utf8(hex).expect("validated hex digits are valid UTF-8"),
+                            16,
+                        )
+                        .expect("validated hex digits parse as u16");
 
                         if (0xD800..=0xDBFF).contains(&cp) {
                             if i + 11 <= end && input[i + 5] == b'\\' && input[i + 6] == b'u' {
                                 let hex2 = &input[i + 7..i + 11];
                                 if hex2.iter().all(|&b| b.is_ascii_hexdigit()) {
-                                    let cp2 =
-                                        u16::from_str_radix(std::str::from_utf8(hex2).unwrap(), 16)
-                                            .unwrap();
+                                    let cp2 = u16::from_str_radix(
+                                        std::str::from_utf8(hex2)
+                                            .expect("validated hex digits are valid UTF-8"),
+                                        16,
+                                    )
+                                    .expect("validated hex digits parse as u16");
                                     if (0xDC00..=0xDFFF).contains(&cp2) {
                                         let full_cp = 0x10000
                                             + ((cp as u32 - 0xD800) << 10)

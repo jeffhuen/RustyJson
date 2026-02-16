@@ -1736,25 +1736,29 @@ pub mod bench_helpers {
 
     pub fn escape_string_json(input: &str) -> Vec<u8> {
         let mut buf = Vec::new();
-        write_json_string_escaped(input, &mut buf, EscapeMode::Json).unwrap();
+        write_json_string_escaped(input, &mut buf, EscapeMode::Json)
+            .expect("Vec<u8> write cannot fail");
         buf
     }
 
     pub fn escape_string_html(input: &str) -> Vec<u8> {
         let mut buf = Vec::new();
-        write_json_string_escaped(input, &mut buf, EscapeMode::HtmlSafe).unwrap();
+        write_json_string_escaped(input, &mut buf, EscapeMode::HtmlSafe)
+            .expect("Vec<u8> write cannot fail");
         buf
     }
 
     pub fn escape_string_unicode(input: &str) -> Vec<u8> {
         let mut buf = Vec::new();
-        write_json_string_escaped(input, &mut buf, EscapeMode::UnicodeSafe).unwrap();
+        write_json_string_escaped(input, &mut buf, EscapeMode::UnicodeSafe)
+            .expect("Vec<u8> write cannot fail");
         buf
     }
 
     pub fn escape_string_javascript(input: &str) -> Vec<u8> {
         let mut buf = Vec::new();
-        write_json_string_escaped(input, &mut buf, EscapeMode::JavaScriptSafe).unwrap();
+        write_json_string_escaped(input, &mut buf, EscapeMode::JavaScriptSafe)
+            .expect("Vec<u8> write cannot fail");
         buf
     }
 }
