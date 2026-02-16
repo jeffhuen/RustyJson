@@ -40,6 +40,7 @@ impl Write for Writer {
 
 impl Writer {
     /// Get the final output buffer, consuming self
+    #[must_use = "discarding the compressed output loses the encoding work"]
     pub fn get_buf(self) -> Result<Vec<u8>, Error> {
         match self {
             Writer::Plain(v) => Ok(v),
@@ -53,16 +54,25 @@ impl Writer {
     }
 }
 
+/// BufWriter capacity for the gzip output stream.
+const GZIP_BUF_CAPACITY: usize = 10_240;
+
+/// Initial capacity for the compressed output Vec.
+const GZIP_OUTPUT_CAPACITY: usize = 4096;
+
+/// Initial capacity for the plain (uncompressed) output Vec.
+const PLAIN_OUTPUT_CAPACITY: usize = 4096;
+
 pub fn get_writer(opts: Option<(Algs, Option<u32>)>) -> Writer {
     match opts {
         Some((Algs::Gzip, None)) => Writer::Gzip(BufWriter::with_capacity(
-            10_240,
-            GzEncoder::new(Vec::with_capacity(4096), Compression::default()),
+            GZIP_BUF_CAPACITY,
+            GzEncoder::new(Vec::with_capacity(GZIP_OUTPUT_CAPACITY), Compression::default()),
         )),
         Some((Algs::Gzip, Some(lv))) => Writer::Gzip(BufWriter::with_capacity(
-            10_240,
-            GzEncoder::new(Vec::with_capacity(4096), Compression::new(lv)),
+            GZIP_BUF_CAPACITY,
+            GzEncoder::new(Vec::with_capacity(GZIP_OUTPUT_CAPACITY), Compression::new(lv)),
         )),
-        _ => Writer::Plain(Vec::with_capacity(4096)),
+        _ => Writer::Plain(Vec::with_capacity(PLAIN_OUTPUT_CAPACITY)),
     }
 }

@@ -186,7 +186,7 @@ fn encode_direct_impl<'a>(
             .map_err(|e| Error::RaiseTerm(Box::new(e.to_string())))?;
         let output = buf
             .get_buf()
-            .map_err(|e| Error::RaiseTerm(Box::new(format!("{}", e))))?;
+            .map_err(|e| Error::RaiseTerm(Box::new(e.to_string())))?;
         let mut bin = rustler::NewBinary::new(env, output.len());
         bin.as_mut_slice().copy_from_slice(&output);
         Ok(bin.into())

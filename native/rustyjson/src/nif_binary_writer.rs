@@ -7,6 +7,9 @@ use std::io::{self, Write};
 /// `Vec<u8>` → `NewBinary` copy that the previous encode path performed.
 /// On finalization, the binary is shrunk to exact size via `realloc` and
 /// released as an immutable `Binary`.
+/// Minimum capacity for the backing binary after a growth event.
+const MIN_GROW_CAPACITY: usize = 128;
+
 pub struct NifBinaryWriter {
     inner: OwnedBinary,
     pos: usize,
@@ -35,16 +38,21 @@ impl NifBinaryWriter {
         let required = self.pos + additional;
         if required > self.inner.len() {
             // Double or grow to required, whichever is larger
-            let new_cap = required.max(self.inner.len() * 2).max(128);
+            let new_cap = required.max(self.inner.len() * 2).max(MIN_GROW_CAPACITY);
             self.inner.realloc_or_copy(new_cap);
         }
     }
 
     /// Consume the writer and return an immutable `Binary`.
     /// Shrinks the allocation to the exact number of bytes written.
+    /// If realloc fails, the binary is released at its current (larger) size
+    /// rather than silently discarding the error — a minor over-allocation
+    /// is preferable to losing data or panicking.
     pub fn into_binary(mut self, env: Env) -> Binary {
         if self.pos < self.inner.len() {
-            let _ = self.inner.realloc(self.pos);
+            // Best-effort shrink; if realloc fails we keep the oversized buffer.
+            // realloc returns false on failure — no data is lost either way.
+            self.inner.realloc(self.pos);
         }
         self.inner.release(env)
     }

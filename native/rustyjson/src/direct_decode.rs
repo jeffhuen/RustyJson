@@ -11,6 +11,11 @@ pub type DecodeError = (Cow<'static, str>, usize);
 /// Maximum nesting depth to prevent stack overflow
 const MAX_DEPTH: usize = 128;
 
+/// Minimum string length to use a zero-copy sub-binary reference
+/// instead of copying to a heap binary. Below this threshold, the
+/// overhead of the sub-binary indirection exceeds the copy cost.
+const SUBBINARY_THRESHOLD: usize = 64;
+
 // ============================================================================
 // Structural Index - pre-scan for structural JSON characters
 // ============================================================================
@@ -616,7 +621,7 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                     // sub-binary overhead. For longer strings (>=64 bytes),
                     // zero-copy sub-binary avoids allocation + memcpy.
                     let len = end - start;
-                    if len >= 64 {
+                    if len >= SUBBINARY_THRESHOLD {
                         if let Ok(sub) = self.input_binary.make_subbinary(start, len) {
                             return Ok(sub.to_term(self.env));
                         }
@@ -1552,21 +1557,25 @@ impl<'a, 'b> DirectParser<'a, 'b> {
 
         self.depth -= 1;
 
-        // Capture shape for subsequent objects
+        // Build map first using keys by reference, then move keys into shape
+        // to avoid an unnecessary .clone() of the Vec<Term>.
+        let result = if self.opts.ordered_objects {
+            self.build_ordered_object(&keys, &values, obj_start)
+        } else {
+            match Term::map_from_term_arrays(self.env, &keys, &values) {
+                Ok(map) => Ok(map),
+                Err(_) => self.build_map_with_duplicates(&keys, &values, obj_start),
+            }
+        };
+
+        // Capture shape for subsequent objects (move, not clone)
         *shape = Some(KeyShape {
             raw_keys,
-            key_terms: keys.clone(),
+            key_terms: keys,
             is_flat,
         });
 
-        if self.opts.ordered_objects {
-            return self.build_ordered_object(&keys, &values, obj_start);
-        }
-
-        match Term::map_from_term_arrays(self.env, &keys, &values) {
-            Ok(map) => Ok(map),
-            Err(_) => self.build_map_with_duplicates(&keys, &values, obj_start),
-        }
+        result
     }
 
     /// Build %RustyJson.OrderedObject{values: [{k, v}, ...]} preserving order.
@@ -2033,6 +2042,7 @@ pub mod bench_helpers {
 
 /// Parse JSON directly to Erlang terms without intermediate representation
 #[inline]
+#[must_use = "discarding the decoded term loses the parsing work"]
 pub fn json_to_term<'a>(
     env: Env<'a>,
     input_binary: &Binary<'a>,
