@@ -1007,10 +1007,7 @@ impl<'a, 'b> DirectParser<'a, 'b> {
             let exp_val = rest[e_pos + 1..]
                 .parse::<i64>()
                 .map_err(|_| (Cow::Borrowed("Invalid exponent in decimal number"), start))?;
-            (
-                &rest[..e_pos],
-                exp_val,
-            )
+            (&rest[..e_pos], exp_val)
         } else {
             (rest, 0i64)
         };

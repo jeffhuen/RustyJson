@@ -291,12 +291,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lazy_static"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
-
-[[package]]
 name = "lexical-core"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -578,18 +572,16 @@ checksum = "0e819f2bc632f285be6d7cd36e25940d45b2391dd6d9b939e79de557f7014248"
 
 [[package]]
 name = "rustyjson"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "criterion",
  "flate2",
  "itoa",
- "lazy_static",
  "lexical-core",
  "mimalloc",
  "num-bigint",
  "rustler",
  "ryu",
- "serde",
  "simdutf8",
  "smallvec",
  "snmalloc-rs",

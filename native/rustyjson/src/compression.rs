@@ -66,11 +66,17 @@ pub fn get_writer(opts: Option<(Algs, Option<u32>)>) -> Writer {
     match opts {
         Some((Algs::Gzip, None)) => Writer::Gzip(BufWriter::with_capacity(
             GZIP_BUF_CAPACITY,
-            GzEncoder::new(Vec::with_capacity(GZIP_OUTPUT_CAPACITY), Compression::default()),
+            GzEncoder::new(
+                Vec::with_capacity(GZIP_OUTPUT_CAPACITY),
+                Compression::default(),
+            ),
         )),
         Some((Algs::Gzip, Some(lv))) => Writer::Gzip(BufWriter::with_capacity(
             GZIP_BUF_CAPACITY,
-            GzEncoder::new(Vec::with_capacity(GZIP_OUTPUT_CAPACITY), Compression::new(lv)),
+            GzEncoder::new(
+                Vec::with_capacity(GZIP_OUTPUT_CAPACITY),
+                Compression::new(lv),
+            ),
         )),
         _ => Writer::Plain(Vec::with_capacity(PLAIN_OUTPUT_CAPACITY)),
     }

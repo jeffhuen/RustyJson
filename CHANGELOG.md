@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.9] - 2026-02-16
+
+### Improved
+
+- **Decimal encoding performance** — Fixed a bottleneck that caused scheduler contention and connection timeouts when encoding Decimal values under high throughput.
+- **Error handling** — The parser now returns descriptive errors for malformed unicode escapes and invalid exponents instead of risking NIF crashes.
+- **Reduced allocations** — Less memory pressure when decoding arrays of same-shape objects.
+
+### Changed
+
+- Removed unused `serde` and `lazy_static` dependencies.
+- Internal code quality improvements (named constants, idiomatic error propagation).
+
 ## [0.3.8] - 2026-02-12
 
 ### Fixed
@@ -359,6 +372,7 @@ No regressions. Relative speedup vs Jason is unchanged from v0.2.0.
 - Zero-copy string handling in decoder for unescaped strings
 - SIMD-accelerated escape scanning via portable `std::simd`
 
+[0.3.9]: https://github.com/jeffhuen/rustyjson/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/jeffhuen/rustyjson/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/jeffhuen/rustyjson/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/jeffhuen/rustyjson/compare/v0.3.5...v0.3.6

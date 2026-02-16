@@ -19,8 +19,7 @@ impl NifBinaryWriter {
     /// Create a new writer with the given initial capacity.
     /// Panics if the initial allocation fails (extremely unlikely).
     pub fn new(initial_cap: usize) -> Self {
-        let inner =
-            OwnedBinary::new(initial_cap).expect("OwnedBinary allocation failed");
+        let inner = OwnedBinary::new(initial_cap).expect("OwnedBinary allocation failed");
         Self { inner, pos: 0 }
     }
 
