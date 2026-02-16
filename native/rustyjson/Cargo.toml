@@ -12,8 +12,6 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 flate2 = "1.0"
 rustler = { version = "0.37", features = ["big_integer"] }
-serde = "1.0"
-lazy_static = "1.0"
 itoa = "1.0"
 ryu = "1.0"
 lexical-core = "1.0"

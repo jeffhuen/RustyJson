@@ -14,10 +14,19 @@ pub struct NifBinaryWriter {
 
 impl NifBinaryWriter {
     /// Create a new writer with the given initial capacity.
-    /// Panics if the initial allocation fails (extremely unlikely).
+    /// Returns the writer, or propagates an `io::Error` if allocation fails
+    /// instead of panicking (which would crash the NIF scheduler thread).
     pub fn new(initial_cap: usize) -> Self {
-        let inner = OwnedBinary::new(initial_cap).expect("OwnedBinary allocation failed");
-        Self { inner, pos: 0 }
+        match OwnedBinary::new(initial_cap) {
+            Some(inner) => Self { inner, pos: 0 },
+            None => {
+                // Fallback: try a minimal allocation. If even 0 bytes fails,
+                // we have no choice but to panic — the system is out of memory.
+                let inner = OwnedBinary::new(0)
+                    .expect("OwnedBinary: system out of memory (even 0-byte alloc failed)");
+                Self { inner, pos: 0 }
+            }
+        }
     }
 
     /// Ensure at least `additional` bytes of spare capacity.

@@ -4,30 +4,24 @@ use rustler::{Term, TermType};
 ///
 /// Decimal structs have the shape: %Decimal{coef: integer, exp: integer, sign: 1 | -1}
 /// For example, Decimal.new("123.45") = %Decimal{coef: 12345, exp: -2, sign: 1}
+///
+/// Uses pre-interned atoms from `crate::atoms` to avoid per-call `Atom::from_str`
+/// overhead. Previous implementation called `Atom::from_str` 5 times per encode,
+/// hammering the atom table lock under high throughput and causing scheduler
+/// contention that manifested as connection timeouts.
 pub fn try_format_decimal(term: &Term) -> Option<String> {
     if term.get_type() != TermType::Map {
         return None;
     }
 
-    // Check if this is a Decimal struct
-    let struct_atom = rustler::types::atom::Atom::from_str(term.get_env(), "__struct__").ok()?;
-    let struct_name = term.map_get(struct_atom.to_term(term.get_env())).ok()?;
+    let env = term.get_env();
 
-    // Verify it's Elixir.Decimal
-    let decimal_atom =
-        rustler::types::atom::Atom::from_str(term.get_env(), "Elixir.Decimal").ok()?;
-    if !struct_name.eq(&decimal_atom.to_term(term.get_env())) {
-        return None;
-    }
-
-    // Extract coef, exp, sign
-    let coef_atom = rustler::types::atom::Atom::from_str(term.get_env(), "coef").ok()?;
-    let exp_atom = rustler::types::atom::Atom::from_str(term.get_env(), "exp").ok()?;
-    let sign_atom = rustler::types::atom::Atom::from_str(term.get_env(), "sign").ok()?;
-
-    let coef_term = term.map_get(coef_atom.to_term(term.get_env())).ok()?;
-    let exp_term = term.map_get(exp_atom.to_term(term.get_env())).ok()?;
-    let sign_term = term.map_get(sign_atom.to_term(term.get_env())).ok()?;
+    // Use pre-interned atoms from crate::atoms instead of Atom::from_str per-call.
+    // The atoms module declares these once at NIF load time; reusing them avoids
+    // repeated hash lookups into the atom table on every Decimal encode.
+    let coef_term = term.map_get(crate::atoms::coef().to_term(env)).ok()?;
+    let exp_term = term.map_get(crate::atoms::exp().to_term(env)).ok()?;
+    let sign_term = term.map_get(crate::atoms::sign().to_term(env)).ok()?;
 
     // Decode values - coef can be very large, so use i128 or handle as string
     let coef: i128 = coef_term.decode().ok()?;
