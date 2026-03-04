@@ -82,7 +82,7 @@ defmodule RustyJson do
   | `NaiveDateTime` | ISO8601 string | `~N[2024-01-15 14:30:00]` → `"2024-01-15T14:30:00"` |
   | `Date` | ISO8601 string | `~D[2024-01-15]` → `"2024-01-15"` |
   | `Time` | ISO8601 string | `~T[14:30:00]` → `"14:30:00"` |
-  | `Decimal` | string | `Decimal.new("123.45")` → `"123.45"` |
+  | `Decimal` | string | `Decimal.new("123.45")` → `"123.45"` (exponents beyond ±1024 fall back to map encoding) |
   | `URI` | string | `URI.parse("https://example.com")` → `"https://example.com"` |
   | structs | object | `%User{name: "Alice"}` → `{"name":"Alice"}` (requires `@derive RustyJson.Encoder` or explicit `defimpl`) |
 

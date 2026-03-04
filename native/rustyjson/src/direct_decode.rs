@@ -1853,13 +1853,12 @@ pub mod bench_helpers {
     }
 
     /// Parse an integer from bytes using the same inline logic as parse_number_fast.
-    /// Returns Ok(value) for valid integers ≤18 digits, Err(()) for anything else
+    /// Returns `Some(value)` for valid integers ≤18 digits, `None` for anything else
     /// (floats, >18 digits, invalid input).
-    pub fn parse_integer_fast(input: &[u8], mut pos: usize) -> Result<i64, ()> {
+    pub fn parse_integer_fast(input: &[u8], mut pos: usize) -> Option<i64> {
         if pos >= input.len() {
-            return Err(());
+            return None;
         }
-        let start = pos;
         let neg = input[pos] == b'-';
         if neg {
             pos += 1;
@@ -1870,19 +1869,19 @@ pub mod bench_helpers {
         }
         let digit_count = pos - digit_start;
         if digit_count == 0 {
-            return Err(());
+            return None;
         }
         // Leading zero only for "0" or "-0"
         if digit_count > 1 && input[digit_start] == b'0' {
-            return Err(());
+            return None;
         }
         // Reject floats / exponents
         if pos < input.len() && matches!(input[pos], b'.' | b'e' | b'E') {
-            return Err(());
+            return None;
         }
         // Only handle ≤18 digits (no overflow possible for i64)
         if digit_count > 18 {
-            return Err(());
+            return None;
         }
         let mut val: i64 = 0;
         for &b in &input[digit_start..pos] {
@@ -1891,9 +1890,7 @@ pub mod bench_helpers {
         if neg {
             val = -val;
         }
-        // Verify we consumed exactly the right number of bytes from start
-        let _ = start;
-        Ok(val)
+        Some(val)
     }
 
     /// Validate JSON structure using the same scanning logic as the real parser.

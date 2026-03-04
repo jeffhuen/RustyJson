@@ -1,7 +1,7 @@
 defmodule RustyJson.MixProject do
   use Mix.Project
 
-  @version "0.3.9"
+  @version "0.3.10"
 
   def project do
     [
@@ -52,7 +52,6 @@ defmodule RustyJson.MixProject do
       flags: [
         :unmatched_returns,
         :error_handling,
-        :no_opaque,
         :unknown,
         :no_return
       ]

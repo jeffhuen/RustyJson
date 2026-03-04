@@ -817,6 +817,32 @@ defmodule JasonParityTest do
       end
     end
 
+    test "Decimal encoding with coefficient exceeding i128 max" do
+      # i128::MAX is 170141183460469231731687303715884105727 (39 digits).
+      # Coefficients above this previously failed to decode in the Rust NIF,
+      # causing the Decimal to silently encode as a raw map instead of a string.
+      i128_max = 170_141_183_460_469_231_731_687_303_715_884_105_727
+
+      for coef <- [i128_max + 1, i128_max * 2, Decimal.new("1E40").coef] do
+        d = %Decimal{coef: coef, exp: 0, sign: 1}
+
+        assert RustyJson.encode!(d) == Jason.encode!(d),
+               "mismatch for Decimal with coef #{coef}"
+      end
+
+      # Negative sign, with decimal places
+      d = %Decimal{coef: i128_max + 1, exp: -10, sign: -1}
+
+      assert RustyJson.encode!(d) == Jason.encode!(d),
+             "mismatch for negative Decimal with coef > i128 max"
+
+      # Positive exponent with large coef — exercises trailing-zero growth
+      d = %Decimal{coef: i128_max + 1, exp: 5, sign: 1}
+
+      assert RustyJson.encode!(d) == Jason.encode!(d),
+             "mismatch for Decimal with coef > i128 max and positive exp"
+    end
+
     test "list with many types" do
       list = [
         1,

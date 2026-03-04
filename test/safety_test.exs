@@ -202,6 +202,31 @@ defmodule SafetyTest do
     end
   end
 
+  describe "Decimal exponent bounds" do
+    test "absurd positive exponent does not produce unbounded allocation" do
+      d = %Decimal{coef: 1, exp: 2_000_000_000, sign: 1}
+      # Should encode as a map fallback, not attempt a 2GB string
+      {:ok, json} = RustyJson.encode(d)
+      decoded = Jason.decode!(json)
+      assert is_map(decoded), "expected map fallback for absurd positive exp"
+    end
+
+    test "absurd negative exponent does not panic" do
+      d = %Decimal{coef: 1, exp: -2_000_000_000, sign: 1}
+      {:ok, json} = RustyJson.encode(d)
+      decoded = Jason.decode!(json)
+      assert is_map(decoded), "expected map fallback for absurd negative exp"
+    end
+
+    test "exponent within bounds still formats as decimal string" do
+      d = %Decimal{coef: 1, exp: 100, sign: 1}
+      assert RustyJson.encode!(d) == Jason.encode!(d)
+
+      d = %Decimal{coef: 1, exp: -100, sign: 1}
+      assert RustyJson.encode!(d) == Jason.encode!(d)
+    end
+  end
+
   describe "special types with protocol mode" do
     test "MapSet raises UndefinedError" do
       set = MapSet.new([1, 2, 3])

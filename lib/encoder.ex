@@ -301,18 +301,17 @@ defmodule RustyJson.Encoder.DerivedNIF do
     %RustyJson.Fragment{encode: result}
   end
 
-  @doc false
   @spec nif_field(term(), RustyJson.escape_mode(), RustyJson.Encode.opts()) :: nif_value()
-  def nif_field(value, _escape_mode, _opts) when is_binary(value), do: value
-  def nif_field(value, _escape_mode, _opts) when is_integer(value), do: value
-  def nif_field(nil, _escape_mode, _opts), do: nil
-  def nif_field(true, _escape_mode, _opts), do: true
-  def nif_field(false, _escape_mode, _opts), do: false
+  defp nif_field(value, _escape_mode, _opts) when is_binary(value), do: value
+  defp nif_field(value, _escape_mode, _opts) when is_integer(value), do: value
+  defp nif_field(nil, _escape_mode, _opts), do: nil
+  defp nif_field(true, _escape_mode, _opts), do: true
+  defp nif_field(false, _escape_mode, _opts), do: false
 
   # Everything else (floats, non-boolean atoms, structs, tuples, maps, lists) → pre-encode.
   # Maps and lists could theoretically be passed raw when they contain only safe primitives,
   # but the NIF contract is strict (only primitives + pre-encoded), so we pre-encode them.
-  def nif_field(value, _escape_mode, opts) do
+  defp nif_field(value, _escape_mode, opts) do
     pre_encode(value, opts)
   end
 

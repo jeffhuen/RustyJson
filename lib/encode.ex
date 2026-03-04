@@ -25,12 +25,12 @@ defmodule RustyJson.Encode do
   @typep encode_map :: (map(), escape(), encode_map() -> iodata())
 
   @typedoc """
-  Opaque encoding options.
+  Encoding options.
 
   Passed to `RustyJson.Encoder.encode/2` implementations.
-  Forward to `Encode` functions as-is.
+  Forward to `Encode` functions as-is — do not pattern match on the internal structure.
   """
-  @opaque opts :: {escape, encode_map}
+  @type opts :: {escape, encode_map}
 
   @doc """
   Builds encoding options from an escape mode.
