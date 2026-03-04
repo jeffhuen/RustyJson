@@ -8,9 +8,10 @@ defmodule RustyJson.Encode do
 
   ## Opts
 
-  Functions that accept `opts` use an opaque type matching Jason's `Encode.opts()`.
+  Functions that accept `opts` use a type matching Jason's `Encode.opts()`.
   The opts value is passed to `RustyJson.Encoder.encode/2` implementations and
-  should be forwarded to `Encode` functions as-is.
+  should be forwarded to `Encode` functions as-is — do not pattern match on the
+  internal structure.
 
   ## Examples
 
@@ -35,7 +36,7 @@ defmodule RustyJson.Encode do
   @doc """
   Builds encoding options from an escape mode.
 
-  Returns an opaque opts value that can be passed to `value/2`, `map/2`,
+  Returns an opts value that can be passed to `value/2`, `map/2`,
   `string/2`, and other encoding functions.
 
   ## Examples

@@ -103,9 +103,9 @@ defprotocol RustyJson.Encoder do
   @typedoc """
   Encoder options passed from `RustyJson.encode!/2`.
 
-  This is an opaque value matching `RustyJson.Encode.opts()`. Pass it as-is to
-  `RustyJson.Encode` functions (`value/2`, `map/2`, `string/2`, etc.) inside
-  custom encoder implementations. Do not inspect or destructure this value.
+  Matches `RustyJson.Encode.opts()`. Pass it as-is to `RustyJson.Encode`
+  functions (`value/2`, `map/2`, `string/2`, etc.) inside custom encoder
+  implementations.
   """
   @type opts :: RustyJson.Encode.opts()
 
