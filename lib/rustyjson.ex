@@ -133,19 +133,22 @@ defmodule RustyJson do
   ## Error Handling
 
   RustyJson provides clear, actionable error messages. `encode/1` and `decode/1`
-  consistently return `{:error, reason}` tuples for invalid input.
+  consistently return `{:error, exception}` tuples for invalid data.
 
       # Error messages describe the problem
-      RustyJson.decode(~s({"key": "value\\\\'s"}))
-      # => {:error, "Invalid escape sequence: \\\\'"}
+      {:error, error} = RustyJson.decode(~s({"key": "value\\\\'s"}))
+      error.message
+      # => "Invalid escape sequence: \\\\' at position 8"
 
       # Unencodable values return error tuples
-      RustyJson.encode(%{{:tuple, :key} => 1})
-      # => {:error, "Map key must be atom, string, or integer"}
+      {:error, error} = RustyJson.encode(%{{:tuple, :key} => 1})
+      error.message
+      # => "Map key must be atom, string, or integer"
 
       # Strict UTF-16 surrogate validation per RFC 7493
-      RustyJson.decode(~s("\\\\uD800"))
-      # => {:error, "Lone surrogate in string"}
+      {:error, error} = RustyJson.decode(~s("\\\\uD800"))
+      error.message
+      # => "Lone surrogate in string at position 0"
 
   This makes error handling predictable—pattern match on results without needing
   `try/rescue` blocks.
@@ -235,7 +238,7 @@ defmodule RustyJson do
   - `:objects` - How to decode JSON objects. `:maps` (default) or `:ordered_objects`
   - `:floats` - How to decode JSON floats. `:native` (default) or `:decimals`
   - `:decoding_integer_digit_limit` - Maximum digits in integer part. 0 disables.
-    Default: 1024, or the value of `Application.compile_env(:rustyjson, :decoding_integer_digit_limit)`
+    Default: 1024. Pass this option per call to override it.
   - `:max_bytes` - Maximum input size in bytes. 0 means unlimited (default).
     The check is performed using `IO.iodata_length/1` *before* converting to binary,
     avoiding the memory spike from allocating the full binary.
@@ -261,17 +264,8 @@ defmodule RustyJson do
           | {:validate_strings, boolean()}
           | {:dirty_threshold, non_neg_integer()}
 
-  @default_dirty_threshold_bytes Application.compile_env(
-                                   :rustyjson,
-                                   :dirty_threshold_bytes,
-                                   102_400
-                                 )
-
-  @default_integer_digit_limit Application.compile_env(
-                                 :rustyjson,
-                                 :decoding_integer_digit_limit,
-                                 1024
-                               )
+  @default_dirty_threshold_bytes 102_400
+  @default_integer_digit_limit 1024
 
   # ============================================================================
   # Decode fast-path defaults
@@ -440,8 +434,9 @@ defmodule RustyJson do
       iex> RustyJson.encode(%{valid: true}, pretty: true)
       {:ok, \"{\\n  \\\"valid\\\": true\\n}\"}
 
-      iex> RustyJson.encode("invalid UTF-8: " <> <<0xFF>>)
-      {:error, "Failed to decode binary as UTF-8"}
+      iex> {:error, error} = RustyJson.encode("invalid UTF-8: " <> <<0xFF>>)
+      iex> error.message
+      "Failed to decode binary as UTF-8"
 
   ## Error Handling
 
@@ -459,7 +454,6 @@ defmodule RustyJson do
   rescue
     e in [RustyJson.EncodeError] -> {:error, e}
     e in [Protocol.UndefinedError] -> {:error, e}
-    e in [ArgumentError] -> {:error, e}
     e in [ErlangError] -> {:error, %RustyJson.EncodeError{message: error_message(e)}}
   end
 
@@ -688,9 +682,8 @@ defmodule RustyJson do
 
   * `:decoding_integer_digit_limit` - Maximum number of digits allowed in the integer
     part of a JSON number. Integers exceeding this limit cause a decode error.
-    Default: `1024`, or the value of
-    `Application.compile_env(:rustyjson, :decoding_integer_digit_limit)`.
-    Set to `0` to disable the limit.
+    Default: `1024`. Pass this option per call to override it, or set it to
+    `0` to disable the limit.
 
   ## Examples
 
@@ -700,8 +693,9 @@ defmodule RustyJson do
       iex> RustyJson.decode(~s([1, 2, 3]))
       {:ok, [1, 2, 3]}
 
-      iex> RustyJson.decode("invalid")
-      {:error, "Unexpected character at position 0"}
+      iex> {:error, error} = RustyJson.decode("invalid")
+      iex> error.message
+      "Unexpected character at position 0"
 
   ## Security Considerations
 
@@ -717,7 +711,6 @@ defmodule RustyJson do
     {:ok, decode!(input, opts)}
   rescue
     e in [RustyJson.DecodeError] -> {:error, e}
-    e in [ArgumentError] -> {:error, %RustyJson.DecodeError{message: Exception.message(e)}}
     e in [ErlangError] -> {:error, %RustyJson.DecodeError{message: error_message(e)}}
   end
 
@@ -801,7 +794,7 @@ defmodule RustyJson do
       nif_decode(input, @default_decode_nif_opts)
     end
   rescue
-    e in [ErlangError] ->
+    e in [ArgumentError, ErlangError] ->
       raise_decode_error(e, input)
   end
 
@@ -1045,12 +1038,15 @@ defmodule RustyJson do
     {keys, nif_opts, %{keys_fn: keys_fn, dirty_threshold: dirty_threshold}}
   end
 
-  # Call the NIF decoder, converting ErlangError to DecodeError.
+  # Call the NIF decoder, converting backend exceptions to DecodeError.
+  # The NIF returns raw decoded terms on success to keep decode!/2 lean; see
+  # docs/ARCHITECTURE.md for why backend errors are normalized at this boundary
+  # instead of changing the NIF contract to {:ok, term} | {:error, reason}.
   # Extracted to avoid `raise` inside `rescue` (Credo W: reraise).
   defp nif_decode_with_error_handling(input_binary, nif_opts, nif_fn) do
     nif_fn.(input_binary, nif_opts)
   rescue
-    e in [ErlangError] ->
+    e in [ArgumentError, ErlangError] ->
       raise_decode_error(e, input_binary)
   end
 
@@ -1065,6 +1061,18 @@ defmodule RustyJson do
       data: input_binary,
       position: pos,
       token: extract_token(input_binary, pos)
+    }
+  end
+
+  # NIF-raised :badarg errors, such as float-exponent overflow, are normalized
+  # to %ArgumentError{} at this boundary. Option-validation ArgumentErrors are
+  # raised before the NIF call and intentionally propagate out of decode/2.
+  defp raise_decode_error(%ArgumentError{} = e, input_binary) do
+    raise %RustyJson.DecodeError{
+      message: Exception.message(e),
+      data: input_binary,
+      position: 0,
+      token: extract_token(input_binary, 0)
     }
   end
 

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.11] - 2026-05-22
+
+### Changed
+
+- **Library configuration** — Removed RustyJson-owned compile-time application configuration for decode defaults. `dirty_threshold` now defaults to `102_400` and `decoding_integer_digit_limit` defaults to `1024`; pass the per-call options to override them.
+- **Invalid option handling** — `encode/2` and `decode/2` now raise `ArgumentError` for invalid options instead of returning `{:error, _}`. Data errors still return error tuples from non-bang APIs.
+
+### Fixed
+
+- **Documentation accuracy** — Corrected error examples to show `%RustyJson.EncodeError{}` / `%RustyJson.DecodeError{}` structs rather than bare string reasons.
+
 ## [0.3.10] - 2026-03-03
 
 ### Fixed
@@ -130,7 +141,7 @@ Major backend refactor: the Rust core was rewritten for safety, stability, and p
 - **`max_bytes`** — Maximum input size in bytes (default: `0`, unlimited). The check uses `IO.iodata_length/1` *before* `IO.iodata_to_binary/1` to avoid allocating a contiguous binary for oversized input. Also enforced defensively in the NIF.
 - **`duplicate_keys: :last | :error`** — Opt-in strict duplicate key rejection (default: `:last`, preserving last-wins semantics). When `:error`, tracks seen keys via `HashSet` in the Rust parser and returns a `DecodeError` on the first duplicate. **Performance note**: adds per-key overhead when enabled — use only when strict validation is needed.
 - **`validate_strings: true | false`** — Opt-in UTF-8 validation for decoded strings (default: `false`). When `true`, calls `std::str::from_utf8()` on both escaped and non-escaped string paths, rejecting invalid byte sequences with a `DecodeError`.
-- **`dirty_threshold`** — Byte size threshold for auto-dispatching decode to a dirty CPU scheduler (default: `102_400` / 100 KB, configurable at compile time via `Application.compile_env(:rustyjson, :dirty_threshold_bytes)`). Set to `0` to disable. Prevents large inputs from blocking normal BEAM schedulers.
+- **`dirty_threshold`** — Byte size threshold for auto-dispatching decode to a dirty CPU scheduler (default: `102_400` / 100 KB). Set to `0` per call to disable. Prevents large inputs from blocking normal BEAM schedulers.
 
 #### Encode Options
 
@@ -213,7 +224,7 @@ RustyJson now matches Jason's public API 1:1 in signatures, return types, and be
 - **`strings: :copy | :reference`** - Accepted for Jason compatibility (both behave identically).
 - **`objects: :ordered_objects`** - Decode JSON objects as `%RustyJson.OrderedObject{}` structs that preserve key insertion order. Built in Rust during parsing for zero overhead. Key transforms (`:atoms`, `:atoms!`, custom functions) apply to `OrderedObject` keys as well.
 - **`floats: :decimals`** - Decode JSON floats as `%Decimal{}` structs for exact decimal representation. Decimal components are parsed in Rust.
-- **`decoding_integer_digit_limit`** - Configurable maximum digits for integer parsing (default: 1024, 0 to disable). Also configurable at compile time via `Application.compile_env(:rustyjson, :decoding_integer_digit_limit, 1024)`. Enforced in the Rust parser.
+- **`decoding_integer_digit_limit`** - Configurable maximum digits for integer parsing (default: 1024, 0 to disable). Pass as a decode option per call. Enforced in the Rust parser.
 
 #### Encode Options
 
@@ -312,16 +323,18 @@ No regressions. Relative speedup vs Jason is unchanged from v0.2.0.
 ### Documentation
 
 - **Error handling documentation** - Added comprehensive documentation highlighting RustyJson's
-  clear, actionable error messages and consistent `{:error, reason}` returns:
+  clear, actionable error messages and consistent `{:error, exception}` returns:
 
   ```elixir
   # Clear error messages describe the problem
-  RustyJson.decode(~s({"key": "value\\'s"}))
-  # => {:error, "Invalid escape sequence: \\'"}
+  {:error, error} = RustyJson.decode(~s({"key": "value\\'s"}))
+  error.message
+  # => "Invalid escape sequence: \\' at position 8"
 
   # Consistent error tuples for invalid input
-  RustyJson.encode(%{{:tuple, :key} => 1})
-  # => {:error, "Map key must be atom, string, or integer"}
+  {:error, error} = RustyJson.encode(%{{:tuple, :key} => 1})
+  error.message
+  # => "Map key must be atom, string, or integer"
   ```
 
 - Added error handling sections to README, moduledoc, and ARCHITECTURE.md
@@ -382,6 +395,7 @@ No regressions. Relative speedup vs Jason is unchanged from v0.2.0.
 - Zero-copy string handling in decoder for unescaped strings
 - SIMD-accelerated escape scanning via portable `std::simd`
 
+[0.3.11]: https://github.com/jeffhuen/rustyjson/compare/v0.3.10...v0.3.11
 [0.3.10]: https://github.com/jeffhuen/rustyjson/compare/v0.3.9...v0.3.10
 [0.3.9]: https://github.com/jeffhuen/rustyjson/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/jeffhuen/rustyjson/compare/v0.3.7...v0.3.8

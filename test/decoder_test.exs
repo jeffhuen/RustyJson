@@ -590,6 +590,12 @@ defmodule DecoderTest do
         RustyJson.decode!("1", strings: :invalid)
       end
     end
+
+    test "invalid strings option raises from non-bang decode" do
+      assert_raise ArgumentError, fn ->
+        RustyJson.decode("1", strings: :invalid)
+      end
+    end
   end
 
   describe "decode with floats: :decimals (Gap 3)" do
@@ -670,6 +676,14 @@ defmodule DecoderTest do
       assert {:error, %RustyJson.DecodeError{} = error} = RustyJson.decode("invalid")
       assert is_binary(error.message)
       assert is_integer(error.position)
+    end
+
+    test "decode/2 returns DecodeError for backend argument errors" do
+      assert {:error, %RustyJson.DecodeError{} = error} =
+               RustyJson.decode("1e100000000000000000000")
+
+      assert error.message == "argument error"
+      assert error.data == "1e100000000000000000000"
     end
   end
 

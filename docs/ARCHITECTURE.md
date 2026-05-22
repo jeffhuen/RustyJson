@@ -452,10 +452,12 @@ RustyJson **rejects lone Unicode surrogates** (e.g., `\uD800` without a trailing
 RustyJson.decode(~s(["\\uD834\\uDD1E"]))  # => {:ok, ["𝄞"]}
 
 # Lone high surrogate - rejected
-RustyJson.decode(~s(["\\uD800"]))  # => {:error, "Lone surrogate in string"}
+{:error, %RustyJson.DecodeError{message: message}} = RustyJson.decode(~s(["\\uD800"]))
+message  # => "Lone surrogate in string at position 1"
 
 # Lone low surrogate - rejected
-RustyJson.decode(~s(["\\uDC00"]))  # => {:error, "Lone surrogate in string"}
+{:error, %RustyJson.DecodeError{message: message}} = RustyJson.decode(~s(["\\uDC00"]))
+message  # => "Lone surrogate in string at position 1"
 ```
 
 **Why we reject lone surrogates:**
@@ -491,11 +493,13 @@ RustyJson prioritizes **clear, actionable error messages** and **consistent erro
 Error messages describe the problem, not just its location:
 
 ```elixir
-RustyJson.decode("{\"foo\":\"bar\\'s\"}")
-# => {:error, "Invalid escape sequence: \\'"}
+{:error, error} = RustyJson.decode("{\"foo\":\"bar\\'s\"}")
+error.message
+# => "Invalid escape sequence: \\' at position 7"
 
-RustyJson.decode("[1, 2,]")
-# => {:error, "Expected value at position 6"}
+{:error, error} = RustyJson.decode("[1, 2,]")
+error.message
+# => "Unexpected character at position 6"
 ```
 
 **Structured error returns:**
@@ -511,6 +515,24 @@ RustyJson.decode("invalid")
 ```
 
 This makes error handling predictable—pattern match on results without needing `try/rescue`.
+
+**NIF boundary error contract:**
+
+Decode NIFs return the decoded Elixir term directly on success. They do not return
+`{:ok, term}` from Rust. This keeps `decode!/2` on the lean path: successful calls
+avoid an extra tuple allocation and unwrap step before returning the decoded term.
+
+Backend decode failures are normalized at the Elixir boundary instead. The small
+wrapper around the NIF rescues backend exceptions (`ArgumentError` for VM `:badarg`
+cases such as float-exponent overflow, plus `ErlangError` for tagged parser errors)
+and raises `%RustyJson.DecodeError{}`. The public non-bang `decode/2` catches that
+domain error and returns `{:error, %RustyJson.DecodeError{}}`.
+
+This is deliberate. A Rust-side tuple-return contract would be more uniform on
+paper, but it would add work to every successful NIF decode, including `decode!/2`,
+and would require a wider Rustler API refactor. For this performance-oriented JSON
+NIF, direct success returns plus centralized boundary error normalization are the
+intended trade-off.
 
 ### Test Coverage
 

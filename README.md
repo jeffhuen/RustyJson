@@ -219,19 +219,22 @@ RustyJson provides clear, actionable error messages and predictable error handli
 
 ```elixir
 # Clear error messages tell you exactly what's wrong
-RustyJson.decode(~s({"key": "value\\'s"}))
-# => {:error, "Invalid escape sequence: \\'"}
+{:error, error} = RustyJson.decode(~s({"key": "value\\'s"}))
+error.message
+# => "Invalid escape sequence: \\' at position 8"
 
 # Unencodable values return error tuples, not exceptions
-RustyJson.encode(%{{:tuple, :key} => 1})
-# => {:error, "Map key must be atom, string, or integer"}
+{:error, error} = RustyJson.encode(%{{:tuple, :key} => 1})
+error.message
+# => "Map key must be atom, string, or integer"
 
 # Strict UTF-16 surrogate validation per RFC 7493
-RustyJson.decode(~s("\\uD800"))
-# => {:error, "Lone surrogate in string"}
+{:error, error} = RustyJson.decode(~s("\\uD800"))
+error.message
+# => "Lone surrogate in string at position 0"
 ```
 
-`encode/1` and `decode/1` consistently return `{:error, reason}` tuples for invalid input, making error handling predictable with pattern matching.
+`encode/1` and `decode/1` consistently return `{:error, exception}` tuples for invalid data, making error handling predictable with pattern matching.
 
 ## How It Works
 

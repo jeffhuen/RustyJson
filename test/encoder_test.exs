@@ -324,6 +324,12 @@ defmodule EncoderTest do
         RustyJson.encode!(%{a: 1}, maps: :invalid)
       end
     end
+
+    test "invalid maps option raises from non-bang encode" do
+      assert_raise ArgumentError, fn ->
+        RustyJson.encode(%{a: 1}, maps: :invalid)
+      end
+    end
   end
 
   # =====================================================================
