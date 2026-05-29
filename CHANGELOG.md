@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.12] - 2026-05-29
+
+### Updated
+
+- **Dependencies bumped to latest** — `decimal` now allows 3.x (`~> 2.0 or ~> 3.0`), supporting the 3.0 security fix for unbounded exponents while remaining compatible with 2.x consumers. `rustler` updated to `~> 0.38`.
+- **Rust/NIF dependencies** — `rustler` 0.38, `tikv-jemallocator` 0.7, `snmalloc-rs` 0.7, `criterion` 0.8 (dev/bench), plus refreshed transitive crates. Benchmarks updated for criterion's `std::hint::black_box`.
+
 ## [0.3.11] - 2026-05-22
 
 ### Changed
@@ -395,6 +402,7 @@ No regressions. Relative speedup vs Jason is unchanged from v0.2.0.
 - Zero-copy string handling in decoder for unescaped strings
 - SIMD-accelerated escape scanning via portable `std::simd`
 
+[0.3.12]: https://github.com/jeffhuen/rustyjson/compare/v0.3.11...v0.3.12
 [0.3.11]: https://github.com/jeffhuen/rustyjson/compare/v0.3.10...v0.3.11
 [0.3.10]: https://github.com/jeffhuen/rustyjson/compare/v0.3.9...v0.3.10
 [0.3.9]: https://github.com/jeffhuen/rustyjson/compare/v0.3.8...v0.3.9

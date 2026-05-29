@@ -1,5 +1,6 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use rustyjson::direct_json::{write_json_string_escaped_pub, EscapeMode};
+use std::hint::black_box;
 
 // ---------------------------------------------------------------------------
 // Test data
@@ -123,7 +124,7 @@ fn bench_float_format(c: &mut Criterion) {
 
     let cases: &[(&str, f64)] = &[
         ("zero", 0.0),
-        ("simple", 3.14159265),
+        ("simple", std::f64::consts::PI),
         ("scientific", 6.022e23),
         ("tiny", 5e-324),
         ("max", 1.7976931348623157e308),
@@ -142,7 +143,7 @@ fn bench_float_format(c: &mut Criterion) {
 
     // Batch formatting
     group.bench_function("ryu_batch_100", |b| {
-        let values: Vec<f64> = (0..100).map(|i| i as f64 * 3.14159265).collect();
+        let values: Vec<f64> = (0..100).map(|i| i as f64 * std::f64::consts::PI).collect();
         b.iter(|| {
             let mut buf = ryu::Buffer::new();
             for &v in &values {

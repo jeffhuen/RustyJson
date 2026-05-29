@@ -1,6 +1,6 @@
 [package]
 name = "rustyjson"
-version = "0.3.11"
+version = "0.3.12"
 authors = ["Jeff Huen"]
 edition = "2021"
 
@@ -11,7 +11,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 flate2 = "1.0"
-rustler = { version = "0.37", features = ["big_integer"] }
+rustler = { version = "0.38", features = ["big_integer"] }
 itoa = "1.0"
 ryu = "1.0"
 lexical-core = "1.0"
@@ -19,8 +19,8 @@ num-bigint = "0.4"
 simdutf8 = "0.1"
 smallvec = "1.13"
 mimalloc = { version = "0.1", default-features = false, optional = true }
-tikv-jemallocator = { version = "0.6", optional = true }
-snmalloc-rs = { version = "0.3", optional = true }
+tikv-jemallocator = { version = "0.7", optional = true }
+snmalloc-rs = { version = "0.7", optional = true }
 
 [target.'cfg(target_env = "musl")'.dependencies]
 mimalloc = { version = "0.1", default-features = false, optional = true, features = ["local_dynamic_tls"] }
@@ -40,7 +40,7 @@ bench = []
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 
 [[bench]]
 name = "decode_bench"

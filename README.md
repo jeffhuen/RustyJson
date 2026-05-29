@@ -13,7 +13,7 @@ A JSON library for Elixir powered by Rust NIFs, designed as a drop-in replacemen
 2. **Reduced BEAM scheduler load** (100-2000x fewer reductions - work happens in native code)
 3. **Faster encoding/decoding** (2-3x faster for medium/large data)
 4. **Full Jason API compatibility** as a true drop-in replacement
-5. **Modern Rustler 0.37+ support** for compatibility with the ecosystem
+5. **Modern Rustler 0.38+ support** for compatibility with the ecosystem
 
 ## Installation
 

@@ -1,7 +1,8 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use rustyjson::direct_decode::bench_helpers;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::hint::black_box;
 
 // ---------------------------------------------------------------------------
 // Test data generators
@@ -91,7 +92,7 @@ fn float_sequence(count: usize) -> Vec<u8> {
         if i > 0 {
             s.push(',');
         }
-        s.push_str(&format!("{:.6}", i as f64 * 3.14159265));
+        s.push_str(&format!("{:.6}", i as f64 * std::f64::consts::PI));
     }
     s.into_bytes()
 }
