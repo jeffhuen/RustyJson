@@ -1,92 +1,47 @@
 %{
-  "librustyjson-v0.3.11-nif-2.15-aarch64-apple-darwin.so.tar.gz" =>
-    "sha256:4d2e4f964b060fdf16edcf44147eaee4f0d322c04a62a7102b9f6309a40fa5de",
-  "librustyjson-v0.3.11-nif-2.15-aarch64-unknown-linux-gnu.so.tar.gz" =>
-    "sha256:45db9f030e7fee52c1305529d60696b2cd8a3b463ac36df86d740c664cc230ea",
-  "librustyjson-v0.3.11-nif-2.15-aarch64-unknown-linux-musl.so.tar.gz" =>
-    "sha256:1eb20d61c9bd03c550acf6d2e65c49091b65fdd9ff7e3ff764f02776fda79752",
-  "librustyjson-v0.3.11-nif-2.15-arm-unknown-linux-gnueabihf.so.tar.gz" =>
-    "sha256:931b128084e7708bf5e54f089bb1b72bb930358241ff9fc3ad7fd899b2668bd5",
-  "librustyjson-v0.3.11-nif-2.15-riscv64gc-unknown-linux-gnu.so.tar.gz" =>
-    "sha256:54a7f576f1d2e1d8f01ac662f04b1bc05b9175c9a568761af45482778a776b00",
-  "librustyjson-v0.3.11-nif-2.15-x86_64-apple-darwin--avx2.so.tar.gz" =>
-    "sha256:029d365c97563abb5b8e74dcff2a59a7352e826e3dc88a61f389b3a939a062f0",
-  "librustyjson-v0.3.11-nif-2.15-x86_64-apple-darwin.so.tar.gz" =>
-    "sha256:475811ec6ca4e090138b8142a4c81c1c686bd46a8a4b6e39dfb508608280ecc1",
-  "librustyjson-v0.3.11-nif-2.15-x86_64-unknown-linux-gnu--avx2.so.tar.gz" =>
-    "sha256:bf39f59d06020352bfc8ed28cf94fa9ac6ada7c63ac56110c027642a785dbd03",
-  "librustyjson-v0.3.11-nif-2.15-x86_64-unknown-linux-gnu.so.tar.gz" =>
-    "sha256:d80399c902ad837371a26ffb41f8bb4aaaea56b424c0fc15c7dd2cc930036c09",
-  "librustyjson-v0.3.11-nif-2.15-x86_64-unknown-linux-musl--avx2.so.tar.gz" =>
-    "sha256:0df606a4a3a68b1e9d83be895622c4f95ae00e535cb2160e8a772cafec95be17",
-  "librustyjson-v0.3.11-nif-2.15-x86_64-unknown-linux-musl.so.tar.gz" =>
-    "sha256:2791a244211958c91b9b5019bf805622441011f9a51251458ce21725d181d7f0",
-  "librustyjson-v0.3.11-nif-2.16-aarch64-apple-darwin.so.tar.gz" =>
-    "sha256:4b61c811620c32fa9521eab4f9f5a9b5fbf57c003a9ccceecc665b34a3c7d637",
-  "librustyjson-v0.3.11-nif-2.16-aarch64-unknown-linux-gnu.so.tar.gz" =>
-    "sha256:006fbd78295ee74fcd89d776a5bb9b920ed827b3122329d1a235da173d7c870a",
-  "librustyjson-v0.3.11-nif-2.16-aarch64-unknown-linux-musl.so.tar.gz" =>
-    "sha256:2f944828726cc74b7eec84cfe8130bb90a3f8c93a800d7628ee062241dc85d0e",
-  "librustyjson-v0.3.11-nif-2.16-arm-unknown-linux-gnueabihf.so.tar.gz" =>
-    "sha256:67a59e2ee5d7a94396be77b03f8061567a771d93f477f96e57514f39e8537d15",
-  "librustyjson-v0.3.11-nif-2.16-riscv64gc-unknown-linux-gnu.so.tar.gz" =>
-    "sha256:69dd90ca692b755d040b2db41dbcf0bdecf9552bb8c6d8205648ea42837fe690",
-  "librustyjson-v0.3.11-nif-2.16-x86_64-apple-darwin--avx2.so.tar.gz" =>
-    "sha256:77a6c799968056779c3795c0c74b148621a392aefa1a533338f53b8d2be6d664",
-  "librustyjson-v0.3.11-nif-2.16-x86_64-apple-darwin.so.tar.gz" =>
-    "sha256:4816839431487b0ba9ae2051bed7f55f5d3805826984cf81558c309e78557407",
-  "librustyjson-v0.3.11-nif-2.16-x86_64-unknown-linux-gnu--avx2.so.tar.gz" =>
-    "sha256:2124cb81de703654572ec8e8f979ef41f84f40fca5d8dd115e66fb3079ba4067",
-  "librustyjson-v0.3.11-nif-2.16-x86_64-unknown-linux-gnu.so.tar.gz" =>
-    "sha256:9308e68a191e0520f4e0a2eb1914da3b5fe246f29cd5e254505653717a1e6621",
-  "librustyjson-v0.3.11-nif-2.16-x86_64-unknown-linux-musl--avx2.so.tar.gz" =>
-    "sha256:5bdc2ad26feb69a9e345d1bdc79f9a2290c10b80b428cbb47100df2d078248f5",
-  "librustyjson-v0.3.11-nif-2.16-x86_64-unknown-linux-musl.so.tar.gz" =>
-    "sha256:285cf7064d5355edfd6c80c9aaf9ee2f1b7637a02471b11a53808f475692be05",
-  "librustyjson-v0.3.11-nif-2.17-aarch64-apple-darwin.so.tar.gz" =>
-    "sha256:ffb1ae93c8b3a1162651e762e9347126a74976b3924b572b6686da1e04584df3",
-  "librustyjson-v0.3.11-nif-2.17-aarch64-unknown-linux-gnu.so.tar.gz" =>
-    "sha256:2d9dfce0ac5d780cf2f957b518969905e50e2233c41d19b712ee7024be018f6a",
-  "librustyjson-v0.3.11-nif-2.17-aarch64-unknown-linux-musl.so.tar.gz" =>
-    "sha256:9868f7325f135e6e9431a33d44d0dc696791249e636006a97d799338f1f4617b",
-  "librustyjson-v0.3.11-nif-2.17-arm-unknown-linux-gnueabihf.so.tar.gz" =>
-    "sha256:3a34f75b7b8c88d39e43d8beb1ba6f999bd266071971d8da0fee179ed8f2a82b",
-  "librustyjson-v0.3.11-nif-2.17-riscv64gc-unknown-linux-gnu.so.tar.gz" =>
-    "sha256:2608e2a6d4b12cad78b789d929c20cf1e69156c30c1203b96f8f3c1f2e02f7c3",
-  "librustyjson-v0.3.11-nif-2.17-x86_64-apple-darwin--avx2.so.tar.gz" =>
-    "sha256:a10f475560ce893d74a2a0876061071847ab05692d63a517887fc093be160c89",
-  "librustyjson-v0.3.11-nif-2.17-x86_64-apple-darwin.so.tar.gz" =>
-    "sha256:25da5abb399e987ad405887925b9e14ffe67b57b899d63ccd73cd7fc7fb684f0",
-  "librustyjson-v0.3.11-nif-2.17-x86_64-unknown-linux-gnu--avx2.so.tar.gz" =>
-    "sha256:9b80366ab0e335c322755a314efd2022b0c7ca15e58e9095946b58d5a4fcc82c",
-  "librustyjson-v0.3.11-nif-2.17-x86_64-unknown-linux-gnu.so.tar.gz" =>
-    "sha256:cff98b05d02669141109c733abbc45da436076be1e02ed1f591f1951a66f4408",
-  "librustyjson-v0.3.11-nif-2.17-x86_64-unknown-linux-musl--avx2.so.tar.gz" =>
-    "sha256:023178315a49b0a759893f5ad5aee96139baaf2faaeeeb6e59c4ba5d686fd44b",
-  "librustyjson-v0.3.11-nif-2.17-x86_64-unknown-linux-musl.so.tar.gz" =>
-    "sha256:680f82d635aafe0f14f9073e09dd98ed3fb1b3e39410c1de48cce09841ca0df5",
-  "rustyjson-v0.3.11-nif-2.15-x86_64-pc-windows-gnu--avx2.dll.tar.gz" =>
-    "sha256:7f536cf43777e12a90a48669105b61717047e1578a048530b16aeaf6c235c03a",
-  "rustyjson-v0.3.11-nif-2.15-x86_64-pc-windows-gnu.dll.tar.gz" =>
-    "sha256:5669fab03d82426ce1af073ff66d4cd84bcecefff2c12d210c828e0f933dae1d",
-  "rustyjson-v0.3.11-nif-2.15-x86_64-pc-windows-msvc--avx2.dll.tar.gz" =>
-    "sha256:9ad589118feac5432999fcbb0acacdc25e6c2a9d013a02b0c50973e24becd35f",
-  "rustyjson-v0.3.11-nif-2.15-x86_64-pc-windows-msvc.dll.tar.gz" =>
-    "sha256:e771596779ecc0633b8322e242cfd285fc1e255d296e59913c5cd890b4a186c4",
-  "rustyjson-v0.3.11-nif-2.16-x86_64-pc-windows-gnu--avx2.dll.tar.gz" =>
-    "sha256:67eb8db6c7d7797519c63ed1d13ca1893958c0a1c477054cdf16a3c1ce3d782b",
-  "rustyjson-v0.3.11-nif-2.16-x86_64-pc-windows-gnu.dll.tar.gz" =>
-    "sha256:b56f699011043ef6a93c66dfd23a9c60b0a20a98b54c1bf06b6fafd2ca845060",
-  "rustyjson-v0.3.11-nif-2.16-x86_64-pc-windows-msvc--avx2.dll.tar.gz" =>
-    "sha256:fa966872abed6f29d41f98edaa2ad471bb23e2cd802c65316d214f20b1c53e2c",
-  "rustyjson-v0.3.11-nif-2.16-x86_64-pc-windows-msvc.dll.tar.gz" =>
-    "sha256:142a1179bff24503443c3de72a48b4295ff6f93f15d43a64ddfff024486d8b46",
-  "rustyjson-v0.3.11-nif-2.17-x86_64-pc-windows-gnu--avx2.dll.tar.gz" =>
-    "sha256:7ed573043c931acf0d7d117dc1b3986fb146ceb19a094c5779b0ce7002b6128b",
-  "rustyjson-v0.3.11-nif-2.17-x86_64-pc-windows-gnu.dll.tar.gz" =>
-    "sha256:c2359a42f5ab05a036567c8e17f61edba6672f4053b8f3f406d05dae492918c8",
-  "rustyjson-v0.3.11-nif-2.17-x86_64-pc-windows-msvc--avx2.dll.tar.gz" =>
-    "sha256:4fdc194cfed1b2761a787a60d9d45f633dd29bb8ad7156054bd163261e8396fc",
-  "rustyjson-v0.3.11-nif-2.17-x86_64-pc-windows-msvc.dll.tar.gz" =>
-    "sha256:642185846ab36bbd6f6b0294aebf922e1ace0aa310bcf8254bd95f333b4d04c5"
+  "librustyjson-v0.3.12-nif-2.15-aarch64-apple-darwin.so.tar.gz" => "sha256:ea04bfa354e0f5cadedf4a36bed7f8da8976a23ff451752579edc8c23c794bb9",
+  "librustyjson-v0.3.12-nif-2.15-aarch64-unknown-linux-gnu.so.tar.gz" => "sha256:a385f8c0c52ff21369d3aed104042fe2601c31eda0399157073c918da39a9efa",
+  "librustyjson-v0.3.12-nif-2.15-aarch64-unknown-linux-musl.so.tar.gz" => "sha256:eecf9bfb0e704829b66512bfc896b27cac6fb515af47dea9cd6ff26371ae9271",
+  "librustyjson-v0.3.12-nif-2.15-arm-unknown-linux-gnueabihf.so.tar.gz" => "sha256:16e05a39ebb1507915219400f11333f7b4b8b3e9f5039343804931f1219431cf",
+  "librustyjson-v0.3.12-nif-2.15-riscv64gc-unknown-linux-gnu.so.tar.gz" => "sha256:c039a5306aa86f64e51cb397b1f4f508f15095a0a0de2c971f6d3b72d627c306",
+  "librustyjson-v0.3.12-nif-2.15-x86_64-apple-darwin--avx2.so.tar.gz" => "sha256:67d0047e73d3cb6547d5c7acb5242e3c68fefcc2a5a2926b5c2d05c0e15b4406",
+  "librustyjson-v0.3.12-nif-2.15-x86_64-apple-darwin.so.tar.gz" => "sha256:56849e5ccdfa95c8f3f6b4d6212694f3792293967a34826f2e0aaf30700c52d4",
+  "librustyjson-v0.3.12-nif-2.15-x86_64-unknown-linux-gnu--avx2.so.tar.gz" => "sha256:114a6bdc7d0f13ad2cf7b887fd52d60db63ba0e8942180b31d2dbd0b4f49d779",
+  "librustyjson-v0.3.12-nif-2.15-x86_64-unknown-linux-gnu.so.tar.gz" => "sha256:ed6e07e8f2e11910389ee001330fe9868c41644f7f0e6be58e6cf121f0bba1a0",
+  "librustyjson-v0.3.12-nif-2.15-x86_64-unknown-linux-musl--avx2.so.tar.gz" => "sha256:175d65a13546921ebf65719587883ce55a6be8b4de59c64ca697031ffece826b",
+  "librustyjson-v0.3.12-nif-2.15-x86_64-unknown-linux-musl.so.tar.gz" => "sha256:29291361eebf685abcd22e9d3538c4aca7e300d8a011bc6681b7933acbbbb640",
+  "librustyjson-v0.3.12-nif-2.16-aarch64-apple-darwin.so.tar.gz" => "sha256:5dc0925da289121289e2fd14f9581e4e8de833577950cd3ba5feeb2134f8a502",
+  "librustyjson-v0.3.12-nif-2.16-aarch64-unknown-linux-gnu.so.tar.gz" => "sha256:f9655b807ea84ba94abf72a78d74c5238c403a815f1bcd506b7829263b0eb6d9",
+  "librustyjson-v0.3.12-nif-2.16-aarch64-unknown-linux-musl.so.tar.gz" => "sha256:e0381da862ff7a72a496f1f216bb4bea7d40b21795d603141ca5a6b2cfda6bcf",
+  "librustyjson-v0.3.12-nif-2.16-arm-unknown-linux-gnueabihf.so.tar.gz" => "sha256:67819b9467e35bc10d9c44d9fba24f24199af188ebeb1cc22076957435635917",
+  "librustyjson-v0.3.12-nif-2.16-riscv64gc-unknown-linux-gnu.so.tar.gz" => "sha256:5c34cd09413f4327161a8d02d693678fd03258a736fc9ee610d5fec49819b727",
+  "librustyjson-v0.3.12-nif-2.16-x86_64-apple-darwin--avx2.so.tar.gz" => "sha256:b2311d85a3958b0414d8706af6091f8ea455e306834833eef656da1c6bcade77",
+  "librustyjson-v0.3.12-nif-2.16-x86_64-apple-darwin.so.tar.gz" => "sha256:71539a43e05f076f80e1a86ca8097b6346155f8e608ee2b66484527d5840c9a2",
+  "librustyjson-v0.3.12-nif-2.16-x86_64-unknown-linux-gnu--avx2.so.tar.gz" => "sha256:2123255fc2d6fcfc1f14a2aae866bcb382c57a6e2ebc5162818165201baff066",
+  "librustyjson-v0.3.12-nif-2.16-x86_64-unknown-linux-gnu.so.tar.gz" => "sha256:ff488d3109841b9cb26daee6a851999e0ecbfed84f1934621962bf3e398e3945",
+  "librustyjson-v0.3.12-nif-2.16-x86_64-unknown-linux-musl--avx2.so.tar.gz" => "sha256:d74cd4db94d2c5bc6c2173df8f70f220dc830bc69ea3c91c8cefb7a7bd929226",
+  "librustyjson-v0.3.12-nif-2.16-x86_64-unknown-linux-musl.so.tar.gz" => "sha256:a7ef648a5e436b9bbb4cbbc3da1f2bdd945349bd24d6885f8a29d35729b6a3b8",
+  "librustyjson-v0.3.12-nif-2.17-aarch64-apple-darwin.so.tar.gz" => "sha256:ed978267f8be87401a3437fc6248dceaab4c18e072ff2b588209727a46d80dc5",
+  "librustyjson-v0.3.12-nif-2.17-aarch64-unknown-linux-gnu.so.tar.gz" => "sha256:0b09ea97e5e8a20509e9d8aafb85d38f5be4b9b7610aa0d7810b92d295e4a4c2",
+  "librustyjson-v0.3.12-nif-2.17-aarch64-unknown-linux-musl.so.tar.gz" => "sha256:9a1705aac65bad5a0cf1a7208cc27cf3c375339a2cb68fc370ef8e25e968b200",
+  "librustyjson-v0.3.12-nif-2.17-arm-unknown-linux-gnueabihf.so.tar.gz" => "sha256:8d67527caad2fb64eaf2ab9a3864588ab3339408560b7f5519e7784d09e53091",
+  "librustyjson-v0.3.12-nif-2.17-riscv64gc-unknown-linux-gnu.so.tar.gz" => "sha256:a3ac2f8fe58397a2706b3da9feba82a66f1ede93d11d01f78291c18c13c2ee69",
+  "librustyjson-v0.3.12-nif-2.17-x86_64-apple-darwin--avx2.so.tar.gz" => "sha256:1b9f380ef059272edac34fc2568d480bf9bc7a35944fe23deb378eaf38c79130",
+  "librustyjson-v0.3.12-nif-2.17-x86_64-apple-darwin.so.tar.gz" => "sha256:9711dc05a2454880386dfcded6ce44318af768408b1e4ef000fc6f27e4ee7ce1",
+  "librustyjson-v0.3.12-nif-2.17-x86_64-unknown-linux-gnu--avx2.so.tar.gz" => "sha256:a4a34033ca1a0a78611e71b1066f2317a789c7df7eb7ca4a7ef10b1d54e0412d",
+  "librustyjson-v0.3.12-nif-2.17-x86_64-unknown-linux-gnu.so.tar.gz" => "sha256:0c35860c239db06a3dd471dad8407aa6a70779905e45556849758fc80c45107b",
+  "librustyjson-v0.3.12-nif-2.17-x86_64-unknown-linux-musl--avx2.so.tar.gz" => "sha256:13c0904003546ed10c6f384d2072eeda96ab8f1f5b42db6aa80431fc098e66d5",
+  "librustyjson-v0.3.12-nif-2.17-x86_64-unknown-linux-musl.so.tar.gz" => "sha256:7ca38dbb31d253302d04005055c4afd3e8906b6bef0138967398b77cb17f56d3",
+  "rustyjson-v0.3.12-nif-2.15-x86_64-pc-windows-gnu--avx2.dll.tar.gz" => "sha256:d744c9e9c41253f4bdf2ce7e80552f123fa81f1c4ad40fbbb71d8ead075b7464",
+  "rustyjson-v0.3.12-nif-2.15-x86_64-pc-windows-gnu.dll.tar.gz" => "sha256:24678cfb1f9e1ed5912d54e80b29647800f2fa24eaa4d0378b36745ed528a36d",
+  "rustyjson-v0.3.12-nif-2.15-x86_64-pc-windows-msvc--avx2.dll.tar.gz" => "sha256:dfa9341847a2468d34790549bff6aad625f4719f601352674c5221f6a042736a",
+  "rustyjson-v0.3.12-nif-2.15-x86_64-pc-windows-msvc.dll.tar.gz" => "sha256:dc2158ec97e93d7f96dd53fdafc5b61c5ae5ba8857046cc74016879837a42d46",
+  "rustyjson-v0.3.12-nif-2.16-x86_64-pc-windows-gnu--avx2.dll.tar.gz" => "sha256:10052a4042976df5a0b9b417bbccb8663a4786ee818ff564faaf9d4f81e7feef",
+  "rustyjson-v0.3.12-nif-2.16-x86_64-pc-windows-gnu.dll.tar.gz" => "sha256:485a6b499bbbeb0ee1408e44c9ac06b1655876ca5db2e6dcbee49db70e41ee68",
+  "rustyjson-v0.3.12-nif-2.16-x86_64-pc-windows-msvc--avx2.dll.tar.gz" => "sha256:f475525ff344e0e46d7ab5fa0bfb3230c0feadbf3f521b438200baa0b67b1911",
+  "rustyjson-v0.3.12-nif-2.16-x86_64-pc-windows-msvc.dll.tar.gz" => "sha256:000dd4ba4c6b8f308b8330bc870c0552ad459c60c5716514e8ea3cc4e53a16eb",
+  "rustyjson-v0.3.12-nif-2.17-x86_64-pc-windows-gnu--avx2.dll.tar.gz" => "sha256:7addd4440cbeb209e04e28406ec593c37fdddb8a9c7aee2c95bd0a649a7a0ed2",
+  "rustyjson-v0.3.12-nif-2.17-x86_64-pc-windows-gnu.dll.tar.gz" => "sha256:8cd67f400b69a99c3df7be9200bdb5c536cd7c01a74548dccfc708c5eb24c4fb",
+  "rustyjson-v0.3.12-nif-2.17-x86_64-pc-windows-msvc--avx2.dll.tar.gz" => "sha256:37a93816f31b4a182ed3f4e7c254fb96d2a10d099e7e13dd8358f8098cfb4dcd",
+  "rustyjson-v0.3.12-nif-2.17-x86_64-pc-windows-msvc.dll.tar.gz" => "sha256:18be717ed8c224d461514cac45497f16f707c413dc77a9cc2600f3524f87db40",
 }
