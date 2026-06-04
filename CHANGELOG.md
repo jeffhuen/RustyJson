@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Phoenix LiveView JS interop** — Added an optional `RustyJson.Encoder` implementation for `Phoenix.LiveView.JS` when LiveView 1.2+ is available. This encodes JS commands through `Phoenix.LiveView.JS.to_encodable/1`, allowing LiveView `push_event/3` payloads containing `%Phoenix.LiveView.JS{}` to work when Phoenix is configured with `config :phoenix, :json_library, RustyJson`.
+- Removed an accidental Phoenix LiveView package dependency from the release metadata.
 
 ## [0.3.12] - 2026-05-29
 

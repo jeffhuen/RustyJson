@@ -52,11 +52,8 @@ RustyJson.decode!(json, keys: :atoms)
 config :phoenix, :json_library, RustyJson
 ```
 
-When Phoenix LiveView 1.2+ is present, RustyJson includes a targeted encoder
-for `%Phoenix.LiveView.JS{}` so JS commands in `push_event/3` payloads encode
-through `Phoenix.LiveView.JS.to_encodable/1`. RustyJson still requires explicit
-`RustyJson.Encoder` implementations for other custom structs; it does not
-fall back to `Jason.Encoder` or Elixir's `JSON.Encoder`.
+RustyJson requires explicit `RustyJson.Encoder` implementations for custom
+structs; it does not fall back to `Jason.Encoder` or Elixir's `JSON.Encoder`.
 
 ## Migrating from Jason
 
