@@ -235,6 +235,17 @@ if Code.ensure_loaded?(Decimal) do
   end
 end
 
+if Code.ensure_loaded?(Phoenix.LiveView.JS) and
+     function_exported?(Phoenix.LiveView.JS, :to_encodable, 1) do
+  defimpl RustyJson.Encoder, for: Phoenix.LiveView.JS do
+    @moduledoc false
+
+    def encode(%Phoenix.LiveView.JS{} = js, opts) do
+      RustyJson.Encode.list(Phoenix.LiveView.JS.to_encodable(js), opts)
+    end
+  end
+end
+
 # Helper module for NIF-accelerated derived struct encoding.
 # Centralises all NIF-path logic so the generated defimpl stays minimal.
 defmodule RustyJson.Encoder.DerivedNIF do

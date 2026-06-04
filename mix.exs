@@ -1,7 +1,7 @@
 defmodule RustyJson.MixProject do
   use Mix.Project
 
-  @version "0.3.12"
+  @version "0.3.13"
 
   def project do
     [
@@ -32,6 +32,7 @@ defmodule RustyJson.MixProject do
       {:rustler_precompiled, "~> 0.8"},
       {:rustler, "~> 0.38", optional: true},
       {:decimal, "~> 2.0 or ~> 3.0", optional: true},
+      {:phoenix_live_view, ">= 1.2.0-rc.0", optional: true},
       {:ex_doc, "~> 0.30", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}

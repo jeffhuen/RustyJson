@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.13] - 2026-06-04
+
+### Fixed
+
+- **Phoenix LiveView JS interop** — Added an optional `RustyJson.Encoder` implementation for `Phoenix.LiveView.JS` when LiveView 1.2+ is available. This encodes JS commands through `Phoenix.LiveView.JS.to_encodable/1`, allowing LiveView `push_event/3` payloads containing `%Phoenix.LiveView.JS{}` to work when Phoenix is configured with `config :phoenix, :json_library, RustyJson`.
+
 ## [0.3.12] - 2026-05-29
 
 ### Updated
@@ -402,6 +408,7 @@ No regressions. Relative speedup vs Jason is unchanged from v0.2.0.
 - Zero-copy string handling in decoder for unescaped strings
 - SIMD-accelerated escape scanning via portable `std::simd`
 
+[0.3.13]: https://github.com/jeffhuen/rustyjson/compare/v0.3.12...v0.3.13
 [0.3.12]: https://github.com/jeffhuen/rustyjson/compare/v0.3.11...v0.3.12
 [0.3.11]: https://github.com/jeffhuen/rustyjson/compare/v0.3.10...v0.3.11
 [0.3.10]: https://github.com/jeffhuen/rustyjson/compare/v0.3.9...v0.3.10
