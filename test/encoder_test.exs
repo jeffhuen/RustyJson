@@ -54,6 +54,12 @@ defmodule EncoderTest.InnerDerived do
   defstruct [:label, :value]
 end
 
+defmodule Phoenix.LiveView.JS do
+  defstruct [:ops]
+
+  def to_encodable(%__MODULE__{ops: ops}), do: ops
+end
+
 defmodule EncoderTest do
   use ExUnit.Case
 
@@ -341,6 +347,16 @@ defmodule EncoderTest do
       assert_raise Protocol.UndefinedError,
                    ~r/RustyJson\.Encoder protocol must always be explicitly implemented/,
                    fn -> RustyJson.encode!(%Container{payload: "test"}) end
+    end
+
+    test "Phoenix.LiveView.JS structs are encoded through to_encodable/1" do
+      js = %Phoenix.LiveView.JS{
+        ops: [["toggle_class", %{names: ["is-active"], to: "#target"}]]
+      }
+
+      assert RustyJson.decode!(RustyJson.encode!(%{toggle: js})) == %{
+               "toggle" => [["toggle_class", %{"names" => ["is-active"], "to" => "#target"}]]
+             }
     end
 
     test "protocol: false bypasses protocol, encodes raw struct fields" do

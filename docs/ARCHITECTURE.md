@@ -415,7 +415,7 @@ This is critical for:
 
 2. **Minimal overhead for built-in types**: Primitive types (strings, numbers, atoms) have pass-through implementations that add negligible cost.
 
-3. **Custom encoding**: Supports `@derive RustyJson.Encoder` for struct field filtering. RustyJson does not generally fall back to `Jason.Encoder` or `JSON.Encoder` for arbitrary structs.
+3. **Custom encoding**: Supports `@derive RustyJson.Encoder` for struct field filtering and a no-dependency runtime bridge for `Phoenix.LiveView.JS`. RustyJson does not generally fall back to `Jason.Encoder` or `JSON.Encoder` for arbitrary structs.
 
 4. **Opt-out for performance**: Use `protocol: false` to bypass the protocol entirely when you have no custom encoders and want maximum throughput.
 

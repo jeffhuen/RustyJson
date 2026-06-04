@@ -351,6 +351,7 @@ end
 defimpl RustyJson.Encoder, for: Any do
   @moduledoc false
   @dialyzer {:nowarn_function, encode: 2}
+  @phoenix_live_view_js Module.concat([Phoenix, LiveView, JS])
 
   # Compile-time codegen for @derive RustyJson.Encoder.
   #
@@ -460,7 +461,20 @@ defimpl RustyJson.Encoder, for: Any do
   defp collapse_static([other | rest]), do: [other | collapse_static(rest)]
   defp collapse_static([]), do: []
 
+  def encode(%{__struct__: @phoenix_live_view_js} = value, opts) do
+    if function_exported?(@phoenix_live_view_js, :to_encodable, 1) do
+      encodable = apply(@phoenix_live_view_js, :to_encodable, [value])
+      RustyJson.Encode.value(encodable, opts)
+    else
+      raise_undefined(value)
+    end
+  end
+
   def encode(value, _opts) do
+    raise_undefined(value)
+  end
+
+  defp raise_undefined(value) do
     raise Protocol.UndefinedError,
       protocol: @protocol,
       value: value,

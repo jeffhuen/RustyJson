@@ -52,8 +52,11 @@ RustyJson.decode!(json, keys: :atoms)
 config :phoenix, :json_library, RustyJson
 ```
 
-RustyJson requires explicit `RustyJson.Encoder` implementations for custom
-structs; it does not fall back to `Jason.Encoder` or Elixir's `JSON.Encoder`.
+When Phoenix LiveView 1.2+ is present, RustyJson encodes
+`%Phoenix.LiveView.JS{}` through `Phoenix.LiveView.JS.to_encodable/1` without
+declaring Phoenix or LiveView as package dependencies. RustyJson still requires
+explicit `RustyJson.Encoder` implementations for other custom structs; it does
+not fall back to `Jason.Encoder` or Elixir's `JSON.Encoder`.
 
 ## Migrating from Jason
 

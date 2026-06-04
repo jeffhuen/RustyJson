@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Removed an accidental Phoenix LiveView package dependency from the release metadata.
+- Added no-dependency Phoenix LiveView JS encoding by calling `Phoenix.LiveView.JS.to_encodable/1` when that struct is present at runtime.
 
 ## [0.3.12] - 2026-05-29
 
