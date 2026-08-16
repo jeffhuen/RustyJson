@@ -336,13 +336,6 @@ defmodule JasonParityTest do
       assert RustyJson.decode!(json) == Jason.decode!(json)
     end
 
-    test "keys: :atoms" do
-      json = ~s({"name":"Alice","age":30})
-
-      assert RustyJson.decode!(json, keys: :atoms) ==
-               Jason.decode!(json, keys: :atoms)
-    end
-
     test "keys: :atoms!" do
       # Ensure atoms exist first
       _ = [:name, :age]

@@ -11,7 +11,8 @@ defmodule DecoderModuleTest do
     end
 
     test "parse/2 passes options through" do
-      assert {:ok, %{name: "Alice"}} = RustyJson.Decoder.parse(~s({"name":"Alice"}), keys: :atoms)
+      assert {:ok, %{name: "Alice"}} =
+               RustyJson.Decoder.parse(~s({"name":"Alice"}), keys: :atoms!)
     end
 
     test "parse/2 with floats: :decimals" do

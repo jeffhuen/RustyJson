@@ -186,12 +186,6 @@ defmodule OrderedObjectTest do
   end
 
   describe "key transforms on decode" do
-    test "keys: :atoms transforms ordered object keys" do
-      json = ~s({"hello":"world"})
-      result = RustyJson.decode!(json, objects: :ordered_objects, keys: :atoms)
-      assert %RustyJson.OrderedObject{values: [{:hello, "world"}]} = result
-    end
-
     test "keys: :atoms! transforms ordered object keys with existing atoms" do
       # Ensure atoms exist
       _ = :existing_key

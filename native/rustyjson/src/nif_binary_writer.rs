@@ -17,40 +17,55 @@ pub struct NifBinaryWriter {
 
 impl NifBinaryWriter {
     /// Create a new writer with the given initial capacity.
-    /// Panics if the initial allocation fails (extremely unlikely).
-    pub fn new(initial_cap: usize) -> Self {
-        let inner = OwnedBinary::new(initial_cap).expect("OwnedBinary allocation failed");
-        Self { inner, pos: 0 }
+    pub fn new(initial_cap: usize) -> io::Result<Self> {
+        let inner = OwnedBinary::new(initial_cap).ok_or(io::ErrorKind::OutOfMemory)?;
+        Ok(Self { inner, pos: 0 })
     }
 
     /// Ensure at least `additional` bytes of spare capacity.
     #[inline]
-    fn reserve(&mut self, additional: usize) {
-        let required = self.pos + additional;
+    fn reserve(&mut self, additional: usize) -> io::Result<usize> {
+        let required = self.pos.checked_add(additional).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "NIF binary capacity overflow")
+        })?;
+
         if required > self.inner.len() {
-            // Double or grow to required, whichever is larger
-            let new_cap = required.max(self.inner.len() * 2).max(MIN_GROW_CAPACITY);
-            self.inner.realloc_or_copy(new_cap);
+            let doubled = self.inner.len().saturating_mul(2);
+            let new_cap = required.max(doubled).max(MIN_GROW_CAPACITY);
+
+            if !self.inner.realloc(new_cap) {
+                let mut replacement =
+                    OwnedBinary::new(new_cap).ok_or(io::ErrorKind::OutOfMemory)?;
+                replacement.as_mut_slice()[..self.pos]
+                    .copy_from_slice(&self.inner.as_slice()[..self.pos]);
+                self.inner = replacement;
+            }
         }
+
+        Ok(required)
     }
 
     /// Consume the writer and return an immutable `Binary`.
     /// Shrinks the allocation to the exact number of bytes written.
-    pub fn into_binary(mut self, env: Env) -> Binary {
-        if self.pos < self.inner.len() {
-            // Best-effort shrink; if realloc fails we keep the oversized buffer.
-            let _ = self.inner.realloc(self.pos);
+    pub fn into_binary(mut self, env: Env) -> io::Result<Binary> {
+        if self.pos < self.inner.len() && !self.inner.realloc(self.pos) {
+            let mut exact = OwnedBinary::new(self.pos).ok_or(io::ErrorKind::OutOfMemory)?;
+            exact
+                .as_mut_slice()
+                .copy_from_slice(&self.inner.as_slice()[..self.pos]);
+            self.inner = exact;
         }
-        self.inner.release(env)
+
+        Ok(self.inner.release(env))
     }
 }
 
 impl Write for NifBinaryWriter {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.reserve(buf.len());
-        self.inner.as_mut_slice()[self.pos..self.pos + buf.len()].copy_from_slice(buf);
-        self.pos += buf.len();
+        let end = self.reserve(buf.len())?;
+        self.inner.as_mut_slice()[self.pos..end].copy_from_slice(buf);
+        self.pos = end;
         Ok(buf.len())
     }
 
@@ -61,9 +76,9 @@ impl Write for NifBinaryWriter {
 
     #[inline]
     fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
-        self.reserve(buf.len());
-        self.inner.as_mut_slice()[self.pos..self.pos + buf.len()].copy_from_slice(buf);
-        self.pos += buf.len();
+        let end = self.reserve(buf.len())?;
+        self.inner.as_mut_slice()[self.pos..end].copy_from_slice(buf);
+        self.pos = end;
         Ok(())
     }
 }

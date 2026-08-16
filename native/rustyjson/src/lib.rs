@@ -1,5 +1,6 @@
 #![feature(portable_simd)]
 
+#[cfg(not(fuzzing))]
 use rustler::{Env, Error, Term};
 
 #[cfg(all(feature = "mimalloc", not(fuzzing)))]
@@ -14,8 +15,10 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
 
+#[cfg(not(fuzzing))]
 mod compression;
 mod decimal;
+#[cfg(not(fuzzing))]
 mod nif_binary_writer;
 mod simd_utils;
 
@@ -192,10 +195,13 @@ fn encode_direct_impl<'a>(
         Ok(bin.into())
     } else {
         // Fast path: write directly to a NIF binary (no intermediate Vec copy)
-        let mut writer = nif_binary_writer::NifBinaryWriter::new(128);
+        let mut writer = nif_binary_writer::NifBinaryWriter::new(128)
+            .map_err(|e| Error::RaiseTerm(Box::new(e.to_string())))?;
         direct_json::term_to_json(term, &mut writer, opts)
             .map_err(|e| Error::RaiseTerm(Box::new(e.to_string())))?;
-        Ok(writer.into_binary(env))
+        writer
+            .into_binary(env)
+            .map_err(|e| Error::RaiseTerm(Box::new(e.to_string())))
     }
 }
 
@@ -293,7 +299,15 @@ fn encode_fields_impl<'a>(
     let pre_encoded_atom = atoms::__pre_encoded__();
 
     // Write directly to a NIF binary (no intermediate Vec copy)
-    let mut output = nif_binary_writer::NifBinaryWriter::new(64 + keys_list.len() * 32);
+    let initial_capacity = keys_list
+        .len()
+        .checked_mul(32)
+        .and_then(|size| size.checked_add(64))
+        .ok_or_else(|| {
+            Error::RaiseTerm(Box::new("encoded field count is too large".to_string()))
+        })?;
+    let mut output = nif_binary_writer::NifBinaryWriter::new(initial_capacity)
+        .map_err(|e| Error::RaiseTerm(Box::new(e.to_string())))?;
     {
         use std::io::Write;
         output
@@ -325,7 +339,9 @@ fn encode_fields_impl<'a>(
             .map_err(|e| Error::RaiseTerm(Box::new(e.to_string())))?;
     }
 
-    Ok(output.into_binary(env))
+    output
+        .into_binary(env)
+        .map_err(|e| Error::RaiseTerm(Box::new(e.to_string())))
 }
 
 #[cfg(not(fuzzing))]

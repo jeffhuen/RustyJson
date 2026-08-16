@@ -12,7 +12,6 @@ defmodule RustyJson.Sigil do
 
   | Modifier | Option |
   |----------|--------|
-  | `a` | `keys: :atoms` |
   | `A` | `keys: :atoms!` |
   | `r` | `strings: :reference` |
   | `c` | `strings: :copy` |
@@ -26,7 +25,7 @@ defmodule RustyJson.Sigil do
       ~j({"name": "Alice", "age": 30})
       #=> %{"name" => "Alice", "age" => 30}
 
-      ~j({"name": "Alice"})a
+      ~j({"name": "Alice"})A
       #=> %{name: "Alice"}
 
       ~J({"x": 1, "y": 2})
@@ -68,7 +67,6 @@ defmodule RustyJson.Sigil do
 
   defp mods_to_opts(modifiers) do
     Enum.flat_map(modifiers, fn
-      ?a -> [keys: :atoms]
       ?A -> [keys: :atoms!]
       ?r -> [strings: :reference]
       ?c -> [strings: :copy]

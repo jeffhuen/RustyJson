@@ -128,10 +128,6 @@ defprotocol RustyJson.Encoder do
   def encode(value, opts)
 end
 
-# Shared needs_encoding check logic injected into Map and List impls at
-# compile time via __using__. This keeps the functions as local defp calls
-# (direct jumps) while maintaining a single source of truth.
-#
 # Recursion characteristics: these functions are tail-recursive when
 # iterating siblings (map entries, list elements) but use body recursion
 # when descending into nested maps/lists (the `or` operator requires a
@@ -144,38 +140,39 @@ end
 defmodule RustyJson.Encoder.NeedsEncoding do
   @moduledoc false
 
-  defmacro __using__(_opts) do
-    quote do
-      defp needs_encoding_iter?(:none), do: false
-      defp needs_encoding_iter?({_k, %{__struct__: _}, _next}), do: true
-      defp needs_encoding_iter?({_k, v, _next}) when is_tuple(v), do: true
+  def needs_encoding?(value) when is_map(value),
+    do: needs_encoding_iter?(:maps.next(:maps.iterator(value)))
 
-      defp needs_encoding_iter?({_k, v, next}) when is_map(v) do
-        needs_encoding_iter?(:maps.next(:maps.iterator(v))) or
-          needs_encoding_iter?(:maps.next(next))
-      end
+  def needs_encoding?(value) when is_list(value), do: needs_encoding_list?(value)
 
-      defp needs_encoding_iter?({_k, v, next}) when is_list(v) do
-        needs_encoding_list?(v) or needs_encoding_iter?(:maps.next(next))
-      end
+  defp needs_encoding_iter?(:none), do: false
+  defp needs_encoding_iter?({_k, %{__struct__: _}, _next}), do: true
+  defp needs_encoding_iter?({_k, v, _next}) when is_tuple(v), do: true
 
-      defp needs_encoding_iter?({_k, _v, next}), do: needs_encoding_iter?(:maps.next(next))
-
-      defp needs_encoding_list?([]), do: false
-      defp needs_encoding_list?([%{__struct__: _} | _]), do: true
-      defp needs_encoding_list?([v | _]) when is_tuple(v), do: true
-
-      defp needs_encoding_list?([v | rest]) when is_map(v) do
-        needs_encoding_iter?(:maps.next(:maps.iterator(v))) or needs_encoding_list?(rest)
-      end
-
-      defp needs_encoding_list?([v | rest]) when is_list(v) do
-        needs_encoding_list?(v) or needs_encoding_list?(rest)
-      end
-
-      defp needs_encoding_list?([_ | rest]), do: needs_encoding_list?(rest)
-    end
+  defp needs_encoding_iter?({_k, v, next}) when is_map(v) do
+    needs_encoding_iter?(:maps.next(:maps.iterator(v))) or
+      needs_encoding_iter?(:maps.next(next))
   end
+
+  defp needs_encoding_iter?({_k, v, next}) when is_list(v) do
+    needs_encoding_list?(v) or needs_encoding_iter?(:maps.next(next))
+  end
+
+  defp needs_encoding_iter?({_k, _v, next}), do: needs_encoding_iter?(:maps.next(next))
+
+  defp needs_encoding_list?([]), do: false
+  defp needs_encoding_list?([%{__struct__: _} | _]), do: true
+  defp needs_encoding_list?([v | _]) when is_tuple(v), do: true
+
+  defp needs_encoding_list?([v | rest]) when is_map(v) do
+    needs_encoding_iter?(:maps.next(:maps.iterator(v))) or needs_encoding_list?(rest)
+  end
+
+  defp needs_encoding_list?([v | rest]) when is_list(v) do
+    needs_encoding_list?(v) or needs_encoding_list?(rest)
+  end
+
+  defp needs_encoding_list?([_ | rest]), do: needs_encoding_list?(rest)
 end
 
 # For maps and lists, check if values contain structs or tuples that need
@@ -183,10 +180,8 @@ end
 # Encode.map/list (single-pass serialization). Otherwise, return the
 # original term for the Rust NIF to handle natively.
 defimpl RustyJson.Encoder, for: Map do
-  use RustyJson.Encoder.NeedsEncoding
-
   def encode(map, opts) do
-    if needs_encoding_iter?(:maps.next(:maps.iterator(map))) do
+    if RustyJson.Encoder.NeedsEncoding.needs_encoding?(map) do
       %RustyJson.Fragment{encode: RustyJson.Encode.map(map, opts)}
     else
       map
@@ -195,12 +190,10 @@ defimpl RustyJson.Encoder, for: Map do
 end
 
 defimpl RustyJson.Encoder, for: List do
-  use RustyJson.Encoder.NeedsEncoding
-
   def encode([], _opts), do: []
 
   def encode(list, opts) do
-    if needs_encoding_list?(list) do
+    if RustyJson.Encoder.NeedsEncoding.needs_encoding?(list) do
       %RustyJson.Fragment{encode: RustyJson.Encode.list(list, opts)}
     else
       list
@@ -239,8 +232,6 @@ end
 # Centralises all NIF-path logic so the generated defimpl stays minimal.
 defmodule RustyJson.Encoder.DerivedNIF do
   @moduledoc false
-
-  use RustyJson.Encoder.NeedsEncoding
 
   @typep pre_encoded :: {:__pre_encoded__, binary()}
   @typep nif_value :: binary() | integer() | boolean() | nil | pre_encoded()
@@ -351,6 +342,7 @@ end
 defimpl RustyJson.Encoder, for: Any do
   @moduledoc false
   @dialyzer {:nowarn_function, encode: 2}
+  @compile {:no_warn_undefined, Phoenix.LiveView.JS}
   @phoenix_live_view_js Module.concat([Phoenix, LiveView, JS])
 
   # Compile-time codegen for @derive RustyJson.Encoder.
@@ -463,7 +455,7 @@ defimpl RustyJson.Encoder, for: Any do
 
   def encode(%{__struct__: @phoenix_live_view_js} = value, opts) do
     if function_exported?(@phoenix_live_view_js, :to_encodable, 1) do
-      encodable = apply(@phoenix_live_view_js, :to_encodable, [value])
+      encodable = Phoenix.LiveView.JS.to_encodable(value)
       RustyJson.Encode.value(encodable, opts)
     else
       raise_undefined(value)

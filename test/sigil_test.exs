@@ -18,11 +18,6 @@ defmodule SigilTest do
       assert ~j(42) == 42
     end
 
-    test "with atoms modifier" do
-      result = ~j({"x": 1})a
-      assert result == %{x: 1}
-    end
-
     test "with atoms! modifier" do
       # Use a well-known atom (:name) that already exists
       result = ~j({"name": "Alice"})A
@@ -45,14 +40,18 @@ defmodule SigilTest do
         """)
       end
     end
+
+    test "lowercase atoms modifier is unsupported" do
+      assert_raise ArgumentError, ~r/unknown sigil modifier/, fn ->
+        Code.eval_string("""
+        import RustyJson.Sigil
+        ~j({"a":1})a
+        """)
+      end
+    end
   end
 
   describe "~j sigil with multiple modifiers" do
-    test "atoms + copy modifiers" do
-      result = ~j({"x": 1})ac
-      assert result == %{x: 1}
-    end
-
     test "atoms! + reference modifiers" do
       result = ~j({"x": 1})Ar
       assert result == %{x: 1}
@@ -63,11 +62,6 @@ defmodule SigilTest do
     test "decodes JSON at compile time" do
       result = ~J({"name": "Alice"})
       assert result == %{"name" => "Alice"}
-    end
-
-    test "with atoms modifier" do
-      result = ~J({"y": 2})a
-      assert result == %{y: 2}
     end
 
     test "with atoms! modifier" do

@@ -251,6 +251,21 @@ defmodule EncoderTest do
       result = RustyJson.encode!(%{a: 1}, pretty: [indent: 2, line_separator: "\r\n"])
       assert result == "{\r\n  \"a\": 1\r\n}"
     end
+
+    test "rejects unknown options and invalid option types" do
+      invalid_options = [
+        [unknown: true],
+        [protocol: :yes],
+        [lean: :yes],
+        [sort_keys: :yes],
+        [pretty: 0],
+        [pretty: [unknown: true]]
+      ]
+
+      for opts <- invalid_options do
+        assert_raise ArgumentError, fn -> RustyJson.encode!(nil, opts) end
+      end
+    end
   end
 
   # =====================================================================

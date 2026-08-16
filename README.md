@@ -1,36 +1,64 @@
 # RustyJson
 
-A JSON library for Elixir powered by Rust NIFs, designed as a drop-in replacement for Jason.
+RustyJson is a Rust-backed JSON library for Elixir. Its common encode and decode
+calls follow Jason, so most call sites can move over with a module-name change.
+It exists for applications where JSON has become measurable work.
 
-## Why RustyJson?
+## Start with Jason
 
-**The Problem**: JSON encoding in Elixir can be memory-intensive. Pure-Elixir encoders create many intermediate binary allocations that pressure the garbage collector. For high-throughput applications processing large JSON payloads, this memory overhead becomes significant.
+[Jason](https://github.com/michalmuskala/jason) is a good default for most
+Elixir applications. It is pure Elixir and keeps builds and deployments simple.
+If Jason already meets your latency and memory needs, keep using it.
 
-**Why a new library?** After OTP 24, Erlang's binary handling improved significantly, narrowing the performance gap between NIFs and pure-Elixir implementations. Additionally, Rustler 0.37+ (required by many modern packages) introduced breaking changes that left some existing NIF-based JSON libraries behind.
+RustyJson is useful when profiling points at JSON: multi-megabyte API responses,
+large exports, ingestion pipelines, or high volumes of repeated records. It moves
+parsing and serialization into Rust and reads or writes BEAM terms without first
+building an intermediate Rust representation.
 
-**RustyJson's approach**: RustyJson focuses on:
-1. **Lower memory usage** during encoding (2-4x less BEAM memory for large payloads)
-2. **Reduced BEAM scheduler load** (100-2000x fewer reductions - work happens in native code)
-3. **Faster encoding/decoding** (2-3x faster for medium/large data)
-4. **Full Jason API compatibility** as a true drop-in replacement
-5. **Modern Rustler 0.38+ support** for compatibility with the ecosystem
+On this repository's Apple M1 Pro benchmarks, encoding a roughly 10 MB payload is
+about 5-6x faster than Jason and uses 2-3x less total memory. Large decodes are
+about 2.4-3.5x faster. Smaller payloads show smaller gains. These results explain
+why the library exists, but they are not a promise for every application. Benchmark
+the payloads that matter to you.
+
+## Deliberate tradeoffs
+
+RustyJson is a native dependency. Precompiled binaries cover the supported
+targets, while source builds require nightly Rust. RustyJson's own Rust source
+contains no `unsafe` blocks, which reduces the risk of memory-unsafe bugs in the
+library. Your application still loads a NIF and relies on native dependencies. If
+that operational cost outweighs the measured gain, Jason is the better fit.
+
+RustyJson also takes a stricter position on JSON keys. It keeps decoded keys as
+strings and leaves out the modes that create atoms dynamically from JSON input.
+Code that relied on `keys: :atoms` or the lowercase `a` sigil modifier must change.
+[Why RustyJson keeps decoded keys as strings](docs/KEY_HANDLING.md) explains the
+reason and the practical effect on evolving APIs.
+
+Unknown options and invalid option values raise instead of being ignored. Custom
+structs require a `RustyJson.Encoder` implementation; RustyJson does not fall back
+to `Jason.Encoder` or Elixir's `JSON.Encoder`. These choices make mistakes visible
+at the call site, but they mean compatibility is deliberate rather than absolute.
 
 ## Installation
 
 ```elixir
 def deps do
-  [{:rustyjson, "~> 0.3"}]
+  [{:rustyjson, "~> 0.4"}]
 end
 ```
 
-Pre-built binaries are provided via [Rustler Precompiled](https://github.com/philss/rustler_precompiled) for 10 targets across 3 NIF versions. On x86_64, an AVX2-optimized variant is automatically selected at compile time when the host CPU supports it. To build from source, set `FORCE_RUSTYJSON_BUILD=true`.
+Prebuilt binaries are provided through [Rustler Precompiled](https://github.com/philss/rustler_precompiled)
+for the supported targets and NIF versions. On x86_64, the build selects an AVX2
+variant when the host CPU supports it. To build from source, set
+`FORCE_RUSTYJSON_BUILD=true`.
 
-## Drop-in Jason Replacement
+## Using the API
 
-RustyJson implements the same API as Jason:
+The common encode/decode calls mirror Jason:
 
 ```elixir
-# These work identically to Jason
+# Core calls match Jason
 RustyJson.encode(term)           # => {:ok, json} | {:error, reason}
 RustyJson.encode!(term)          # => json | raises
 RustyJson.decode(json)           # => {:ok, term} | {:error, reason}
@@ -40,12 +68,11 @@ RustyJson.decode!(json)          # => term | raises
 RustyJson.encode_to_iodata(term)
 RustyJson.encode_to_iodata!(term)
 
-# Options match Jason
+# Pretty-print when needed
 RustyJson.encode!(data, pretty: true)
-RustyJson.decode!(json, keys: :atoms)
 ```
 
-### Phoenix Integration
+### Phoenix integration
 
 ```elixir
 # config/config.exs
@@ -58,9 +85,9 @@ declaring Phoenix or LiveView as package dependencies. RustyJson still requires
 explicit `RustyJson.Encoder` implementations for other custom structs; it does
 not fall back to `Jason.Encoder` or Elixir's `JSON.Encoder`.
 
-## Migrating from Jason
+## Moving from Jason
 
-Find/replace `Jason` → `RustyJson` in your codebase:
+Most call sites can change `Jason` to `RustyJson` directly:
 
 ```elixir
 # Before
@@ -74,30 +101,27 @@ RustyJson.encode!(data)
 RustyJson.Fragment.new(json)
 ```
 
-### Fragments
+## Upgrading from RustyJson 0.3
 
-Inject pre-encoded JSON directly:
+RustyJson 0.4 removes APIs that create atoms dynamically and rejects invalid
+options:
 
-```elixir
-fragment = RustyJson.Fragment.new(~s({"pre":"encoded"}))
-RustyJson.encode!(%{data: fragment})
-# => {"data":{"pre":"encoded"}}
-```
-
-### Formatter
-
-Pretty-print or minify JSON strings:
-
-```elixir
-RustyJson.Formatter.pretty_print(json_string)
-RustyJson.Formatter.minify(json_string)
-```
+- Replace `keys: :atoms` with string keys (the default) or `keys: :atoms!` when
+  every key atom already exists.
+- Replace lowercase `a` on `~j`/`~J` with no modifier for strings or uppercase
+  `A` for existing atoms.
+- Remove unknown encode/decode options. `:protocol`, `:lean`, `:sort_keys`, and
+  `:validate_strings` require booleans; `:decoding_integer_digit_limit`,
+  `:max_bytes`, and `:dirty_threshold` require non-negative integers. Invalid
+  `:pretty` values or nested keys also raise `ArgumentError`.
 
 ## Benchmarks
 
-All benchmarks on Apple Silicon M1. RustyJson's advantage grows with payload size.
+These results were measured on an Apple M1 Pro. They show where RustyJson's
+architecture helps, but payload shape and hardware matter. Run the benchmark suite
+against your own data before choosing a library for performance alone.
 
-### Encoding (Elixir → JSON) — Where RustyJson Shines
+### Encoding
 
 | Dataset | RustyJson | Jason | Speed | Memory |
 |---------|-----------|-------|-------|--------|
@@ -105,54 +129,52 @@ All benchmarks on Apple Silicon M1. RustyJson's advantage grows with payload siz
 | canada.json (2.1 MB) | 6 ms | 18 ms | **3x faster** | **2-3x less** |
 | twitter.json (617 KB) | 1.2 ms | 3.5 ms | **2.9x faster** | similar |
 
-### Decoding (JSON → Elixir)
+### Decoding
 
 | Dataset | RustyJson | Jason | Speed |
 |---------|-----------|-------|-------|
 | Settlement report (10 MB) | 61 ms | 152 ms | **2.5x faster** |
 | canada.json (2.1 MB) | 8 ms | 29 ms | **3.5x faster** |
 
-Both libraries produce identical Elixir data structures, so memory usage is similar for decoding.
+Both libraries produce the same Elixir data structures, so their decoded results
+use similar amounts of memory.
 
-### Decoding API Responses (~30% faster)
+### Repeated keys in API responses
 
-Most JSON that applications decode follows the same pattern: arrays of objects with identical keys. Paginated REST endpoints (`GET /users`), GraphQL queries, database results, webhook payloads, ElasticSearch hits—they all return `[{same keys}, {same keys}, ...]`.
-
-Use `keys: :intern` to cache object keys during parsing:
+API responses and database results often contain arrays of objects with the same
+keys. `keys: :intern` caches those key strings during parsing:
 
 ```elixir
 # API response: 10,000 users with {id, name, email, created_at}
 RustyJson.decode!(json, keys: :intern)  # ~30% faster
 ```
 
-This allocates each key (`"id"`, `"name"`, etc.) once and reuses it across all objects, instead of re-allocating identical strings thousands of times.
+This allocates each repeated key once and reuses it across the array. The option is
+slower for a single object or varied schemas because it pays cache overhead without
+reusing entries. Use it when you know the payload contains at least 10 similarly
+shaped objects.
 
-**Don't use for single objects or varied schemas** - the cache overhead makes it 2-3x *slower* when keys aren't reused. Only use when you know you're decoding arrays of 10+ objects with the same structure.
-
-### BEAM Scheduler Load
+### BEAM reductions and scheduler behavior
 
 ```elixir
 # Reductions (BEAM work units) for encoding 10 MB settlement report:
 RustyJson.encode!(data)  # 404 reductions
-Jason.encode!(data)      # 11,570,847 reductions (28,000x fewer!)
+Jason.encode!(data)      # 11,570,847 reductions
 ```
 
-The real benefit is **reduced BEAM scheduler load** - JSON processing happens in native code, freeing your schedulers for other work.
-
-### When to Use RustyJson
-
-- **Best for**: Large payloads (1MB+), API responses, data exports
-- **Decoding bulk data**: Use `keys: :intern` for arrays of objects (API responses, DB results)
-- **Small payloads**: Competitive on small and deeply nested JSON (SIMD-optimized in v0.3.5)
-- **Biggest wins**: Encoding large structures, decoding homogeneous arrays
+RustyJson uses roughly 28,000x fewer reductions in this test because the NIF does
+most of the work. The CPU work still exists. Decodes of 100 KB or more use a dirty
+scheduler by default. Encoding uses a dirty scheduler automatically for gzip
+compression; for a large uncompressed encode, pass `scheduler: :dirty` when
+blocking a normal scheduler is a concern.
 
 See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for detailed methodology.
 
-## Features
+## API reference
 
-### Built-in Type Support
+### Built-in types
 
-These types are handled natively in Rust without protocol overhead:
+RustyJson handles these types in Rust without protocol overhead:
 
 | Type | JSON Output |
 |------|-------------|
@@ -170,21 +192,48 @@ These types are handled natively in Rust without protocol overhead:
 > behavior. Use `protocol: false` to encode them via the Rust NIF directly
 > (`MapSet` → array, `Range` → object), or add an explicit `RustyJson.Encoder` impl.
 
-### Options
+### Fragments
+
+Use a fragment to inject JSON that has already been encoded:
+
+```elixir
+fragment = RustyJson.Fragment.new(~s({"pre":"encoded"}))
+RustyJson.encode!(%{data: fragment})
+# => {"data":{"pre":"encoded"}}
+```
+
+### Formatter
+
+Pretty-print or minimize a JSON string:
+
+```elixir
+RustyJson.Formatter.pretty_print(json_string)
+RustyJson.Formatter.minimize(json_string)
+```
+
+### Common options
+
+The [RustyJson module documentation](https://hexdocs.pm/rustyjson/RustyJson.html)
+contains the complete option list.
 
 **Encoding:**
+
 - `pretty: true | integer` - Pretty print with indentation
 - `escape: :json | :html_safe | :javascript_safe | :unicode_safe` - Escape mode
 - `compress: :gzip | {:gzip, 0..9}` - Gzip compression
 - `lean: true` - Skip special type handling for max speed
 - `protocol: true` - Enable custom `RustyJson.Encoder` protocol
 - `sort_keys: true` - Sort map keys lexicographically (useful for snapshot tests, caching, diffing)
+- `scheduler: :auto | :normal | :dirty` - Choose where encoding NIF work runs
 
 **Decoding:**
-- `keys: :strings | :atoms | :atoms! | :intern` - Key handling
-  - `:intern` - **~30% faster** for arrays of objects (REST APIs, GraphQL, DB results, webhooks)
 
-### Custom Encoding
+- `keys: :strings | :atoms! | :copy | :intern | function` - Key handling (`:atoms` is intentionally unsupported)
+  - `:intern` - **~30% faster** for arrays of objects (REST APIs, GraphQL, DB results, webhooks)
+- `dirty_threshold: non-negative integer` - Input size that moves decoding to a dirty scheduler
+- `max_bytes: non-negative integer` - Reject inputs larger than the given byte limit
+
+### Custom encoders
 
 For custom types, implement the `RustyJson.Encoder` protocol and use `protocol: true`:
 
@@ -207,24 +256,26 @@ defmodule User do
 end
 ```
 
-## JSON Spec Compliance
+## JSON compliance
 
-RustyJson is fully compliant with RFC 8259 and passes **283/283 mandatory tests** from [JSONTestSuite](https://github.com/nst/JSONTestSuite):
+RustyJson passes all 283 mandatory cases from
+[JSONTestSuite](https://github.com/nst/JSONTestSuite):
 
-- **95/95** `y_` tests (must accept)
-- **188/188** `n_` tests (must reject)
+- 95/95 `y_` tests (must accept)
+- 188/188 `n_` tests (must reject)
 - Rejects lone surrogates per [RFC 7493 I-JSON](https://datatracker.ietf.org/doc/html/rfc7493)
 
 Run `mix test test/json_test_suite_test.exs` to validate compliance (downloads test fixtures on first run).
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed compliance information.
 
-## Error Handling
+## Error handling
 
-RustyJson provides clear, actionable error messages and predictable error handling:
+Data errors return exception structs with a message and, for decode errors, a
+byte position:
 
 ```elixir
-# Clear error messages tell you exactly what's wrong
+# Decode errors include a byte position
 {:error, error} = RustyJson.decode(~s({"key": "value\\'s"}))
 error.message
 # => "Invalid escape sequence: \\' at position 8"
@@ -240,46 +291,54 @@ error.message
 # => "Lone surrogate in string at position 0"
 ```
 
-`encode/1` and `decode/1` consistently return `{:error, exception}` tuples for invalid data, making error handling predictable with pattern matching.
+`encode/1` and `decode/1` return `{:error, exception}` tuples for invalid data.
+Invalid options raise `ArgumentError`, keeping configuration mistakes separate
+from data errors.
 
-## How It Works
+## How RustyJson reduces work
 
-### Why RustyJson Is Different
-
-Most Rust JSON libraries for Elixir use [serde](https://serde.rs/) to convert between Rust and Erlang types. This requires:
+For encoding, a [serde](https://serde.rs/)-based NIF normally converts data in
+three stages:
 
 1. Erlang term → Rust struct (allocation)
 2. Rust struct → JSON bytes (allocation)
 3. JSON bytes → Erlang binary (allocation)
 
-RustyJson eliminates the middle step by walking the Erlang term tree directly and writing JSON bytes without intermediate Rust structures.
+For encoding, RustyJson walks the Erlang term tree and writes JSON bytes directly.
+For decoding, it builds BEAM terms while parsing instead of creating an
+intermediate Rust syntax tree.
 
-**Native type handling in Rust:** Common Elixir types — DateTime, Decimal, URI — are encoded directly in Rust without any Elixir-side transformation. The encoder protocol walk passes these types through unchanged, and Rust formats them natively during serialization. This reduces BEAM work and intermediate allocations compared to libraries that must transform every type in Elixir before handing off to Rust. Custom user types still go through the Elixir encoder protocol as expected. (`MapSet` and `Range` are only handled natively when using `protocol: false`; with the default `protocol: true`, they raise `Protocol.UndefinedError` to match Jason.)
+Common Elixir types such as `DateTime`, `Decimal`, and `URI` pass through the
+encoder protocol unchanged and are formatted in Rust. Custom types still use the
+Elixir encoder protocol. `MapSet` and `Range` require `protocol: false` or an
+explicit encoder implementation.
 
-### Key Optimizations
+### Direct encoder
 
-**Custom Direct Encoder:**
 - Walks Erlang terms directly via Rustler's term API
 - Writes to a single buffer without intermediate allocations
 - Uses [itoa](https://github.com/dtolnay/itoa) and [ryu](https://github.com/dtolnay/ryu) for fast number formatting
 - SIMD-accelerated escape scanning (16 bytes/iter, 32 bytes/iter on AVX2)
 - 256-byte lookup table for O(1) escape detection
 
-**Custom Direct Decoder:**
+### Direct decoder
+
 - Parses JSON while building Erlang terms (no intermediate AST)
 - SIMD-accelerated string scanning, whitespace skipping, and structural character indexing
 - Zero-copy strings for unescaped content
 - Single-entry fast path for objects and arrays (avoids heap allocation for deeply nested JSON)
 - [lexical-core](https://github.com/Alexhuszagh/rust-lexical) for fast number parsing
 
-**Portable SIMD:**
-- All SIMD uses Rust's `std::simd` (portable SIMD) — one codepath per pattern, zero `unsafe`, no `#[cfg(target_arch)]` branching
+### Portable SIMD
+
+- All SIMD uses Rust's `std::simd`, with one code path per pattern and no `unsafe` blocks
 - The compiler generates optimal instructions for each target: SSE2 on x86_64, NEON on aarch64, scalar on others
 - AVX2 precompiled variants use 32-byte wide paths for additional throughput on Haswell+ CPUs
-- Only uses APIs with stable semantics (`Simd::splat/from_slice`, comparisons, `Mask` ops) — the [stabilization blockers](https://github.com/rust-lang/portable-simd/issues/364) (swizzle, scatter/gather, mask element types) are explicitly avoided
 
-**Memory Allocator:**
-Uses [mimalloc](https://github.com/microsoft/mimalloc) by default. Alternatives available via Cargo features:
+### Allocator
+
+RustyJson uses [mimalloc](https://github.com/microsoft/mimalloc) by default.
+Source builds can select jemalloc or snmalloc in `Cargo.toml`:
 
 ```toml
 [features]
@@ -287,25 +346,11 @@ default = ["mimalloc"]
 # Or: "jemalloc", "snmalloc"
 ```
 
-### What We Learned
+## Limits
 
-The bottleneck for JSON NIFs isn't parsing—it's building Erlang terms. SIMD-accelerated parsers use serde, requiring double conversion (JSON → Rust types → BEAM terms). RustyJson skips this by building BEAM terms directly during parsing.
-
-The wins come from:
-1. **Skipping serde entirely** - Walk JSON and build BEAM terms directly in one pass
-2. **No intermediate allocations** - No Rust structs, no AST
-3. **Good memory allocator** - mimalloc reduces fragmentation
-
-## Safety
-
-RustyJson contains **zero `unsafe` code**. All SIMD operations use Rust's portable `std::simd` (safe abstractions), and all NIF binary operations use Rustler's safe API. Memory safety is guaranteed at compile time by the Rust type system.
-
-## Limitations
-
-- Maximum nesting depth: 128 levels (per RFC 7159)
-- Decoding very large payloads (>500 KB) may be only marginally faster than Jason
-- Benchmarks are on Apple Silicon M1; results on other architectures may differ
-- Requires nightly Rust toolchain (for `#![feature(portable_simd)]`)
+- JSON nesting is limited to 128 levels.
+- Precompiled binaries cover the supported targets. Other targets need a source build.
+- Source builds require nightly Rust for `#![feature(portable_simd)]`.
 
 ## Acknowledgments
 

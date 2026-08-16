@@ -2,8 +2,7 @@ defmodule RustyJson do
   @moduledoc """
   A high-performance JSON library for Elixir powered by Rust NIFs.
 
-  RustyJson is designed as a **drop-in replacement for Jason** with significantly
-  better performance characteristics:
+  RustyJson has a **Jason-compatible API** and the following characteristics:
 
   - **3-6x faster encoding** for medium/large payloads
   - **10-20x lower memory usage** during encoding
@@ -113,9 +112,9 @@ defmodule RustyJson do
   3. **Use compression**: For large payloads over the network, `compress: :gzip`
      reduces output size 5-10x.
 
-  4. **Avoid `keys: :atoms` with untrusted input**: `keys: :atoms` uses
-     `String.to_atom/1`, which can exhaust the atom table. Use `keys: :atoms!`
-     (which uses `String.to_existing_atom/1`) or `keys: :strings` (default) instead.
+  4. **Use existing atoms only**: `keys: :atoms!` converts keys with
+     `String.to_existing_atom/1` and raises if an atom does not exist. Use
+     `keys: :strings` (default) for arbitrary input.
 
   5. **Use key interning for bulk data**: When decoding arrays of objects with
      the same schema (API responses, database results, webhooks), use `keys: :intern`
@@ -185,9 +184,8 @@ defmodule RustyJson do
   @typedoc """
   Options for decoding JSON object keys.
 
-  - `:strings` - Keep keys as strings (default, safe)
-  - `:atoms` - Convert to atoms using `String.to_atom/1` (unsafe with untrusted input)
-  - `:atoms!` - Convert to existing atoms using `String.to_existing_atom/1` (safe, raises if missing)
+  - `:strings` - Keep keys as strings (default; does not create atoms)
+  - `:atoms!` - Convert to existing atoms using `String.to_existing_atom/1` (raises if missing; does not create atoms)
   - `:copy` - Copy key binaries (same as `:strings` in RustyJson since NIFs always copy)
   - `:intern` - Cache repeated keys during parsing (~30% faster for arrays of objects).
     The cache is capped at 4096 unique keys — beyond this, new keys are allocated normally.
@@ -195,7 +193,7 @@ defmodule RustyJson do
     with many distinct keys. The cap is internal and not user-configurable.
   - A function of arity 1 - Applied to each key string recursively
   """
-  @type keys :: :strings | :atoms | :atoms! | :copy | :intern | (String.t() -> term())
+  @type keys :: :strings | :atoms! | :copy | :intern | (String.t() -> term())
 
   @typedoc """
   Escape mode for JSON string encoding.
@@ -445,6 +443,9 @@ defmodule RustyJson do
   - Non-finite float (NaN, Infinity)
   - Circular references (will cause stack overflow)
 
+  Unknown options and invalid option values raise `ArgumentError` from both
+  `encode/2` and `encode!/2`.
+
   See `encode!/2` for a version that raises on error.
   """
   @spec encode(term(), [encode_opt()]) ::
@@ -526,8 +527,13 @@ defmodule RustyJson do
     {maps_mode, opts} = Keyword.pop(opts, :maps, :naive)
     {sort_keys, opts} = Keyword.pop(opts, :sort_keys, false)
     {scheduler, opts} = Keyword.pop(opts, :scheduler, :auto)
+
     validate_option!(maps_mode, [:naive, :strict], :maps)
     validate_option!(scheduler, [:auto, :normal, :dirty], :scheduler)
+    validate_boolean!(use_protocol, :protocol)
+    validate_boolean!(lean, :lean)
+    validate_boolean!(sort_keys, :sort_keys)
+    validate_no_unknown_options!(opts)
 
     # Extract pretty print separator opts
     {pretty_opts, indent} = normalize_pretty_opts(indent)
@@ -535,8 +541,6 @@ defmodule RustyJson do
     escape = validate_escape!(escape)
     compression = validate_compression!(compression)
     strict_keys = maps_mode == :strict
-
-    _ = opts
 
     # Build opaque encoder opts matching Jason.Encode.opts() format.
     # This is a {escape_fn, encode_map_fn} tuple that flows through the
@@ -626,10 +630,10 @@ defmodule RustyJson do
     nif_opts = %{
       indent: opts.indent,
       compression: opts.compression,
-      lean: opts.lean == true,
+      lean: opts.lean,
       escape: opts.escape,
       strict_keys: opts.strict_keys,
-      sort_keys: opts.sort_keys == true,
+      sort_keys: opts.sort_keys,
       pretty_opts: opts.pretty_opts
     }
 
@@ -655,9 +659,8 @@ defmodule RustyJson do
   ## Options
 
   * `:keys` - How to decode object keys. One of:
-    * `:strings` - Keep as strings (default, safe)
-    * `:atoms` - Convert to atoms (unsafe with untrusted input)
-    * `:atoms!` - Convert to existing atoms only (safe, raises if atom missing)
+    * `:strings` - Keep as strings (default; does not create atoms)
+    * `:atoms!` - Convert to existing atoms only (raises if atom missing; does not create atoms)
     * `:copy` - Copy key binaries (equivalent to `:strings` in RustyJson)
     * `:intern` - Cache repeated keys during parsing. **~30% faster** for arrays of
       objects with the same schema (REST APIs, GraphQL, database results, webhooks).
@@ -699,10 +702,14 @@ defmodule RustyJson do
 
   ## Security Considerations
 
-  **Avoid `keys: :atoms` with untrusted input.** Atoms are not garbage collected,
-  so an attacker could exhaust your atom table by sending JSON with many unique keys.
+  Use `keys: :strings` (default) for arbitrary or untrusted input. Use
+  `keys: :atoms!` only when every key atom already exists.
 
-  Use `keys: :atoms!` if you expect specific keys to exist, or `keys: :strings` (default).
+  See [Why RustyJson keeps decoded keys as strings](key_handling.html) for the
+  reasoning, practical limits, and migration examples.
+
+  Unknown options and invalid option values raise `ArgumentError` from both
+  `decode/2` and `decode!/2`.
 
   See `decode!/2` for a version that raises on error.
   """
@@ -730,7 +737,7 @@ defmodule RustyJson do
       iex> RustyJson.decode!(~s({"x": [1, 2, 3]}))
       %{"x" => [1, 2, 3]}
 
-      iex> RustyJson.decode!(~s({"x": 1}), keys: :atoms)
+      iex> RustyJson.decode!(~s({"x": 1}), keys: :atoms!)
       %{x: 1}
 
       iex> RustyJson.decode!(~s({"x": 1}), keys: &String.upcase/1)
@@ -802,11 +809,11 @@ defmodule RustyJson do
   #
   # Parses all options, validates them, converts iodata to binary if needed,
   # and applies post-decode key transformations. This path handles all
-  # decode options including keys: :atoms, floats: :decimals, max_bytes, etc.
+  # decode options including keys: :atoms!, floats: :decimals, max_bytes, etc.
   def decode!(input, opts) do
     {keys, nif_opts, validated_opts} = parse_decode_opts(opts)
 
-    max_bytes = Map.get(nif_opts, :max_bytes, 0)
+    max_bytes = nif_opts.max_bytes
 
     if max_bytes > 0 do
       input_size = IO.iodata_length(input)
@@ -821,7 +828,7 @@ defmodule RustyJson do
 
     input_binary = IO.iodata_to_binary(input)
 
-    dirty_threshold = validated_opts[:dirty_threshold]
+    dirty_threshold = validated_opts.dirty_threshold
     use_dirty = dirty_threshold > 0 and byte_size(input_binary) >= dirty_threshold
 
     nif_fn = if use_dirty, do: &nif_decode_dirty/2, else: &nif_decode/2
@@ -884,8 +891,23 @@ defmodule RustyJson do
   # ============================================================================
 
   @doc false
-  defp normalize_pretty_opts(indent) when is_list(indent) do
+  defp normalize_pretty_opts(indent) when is_list(indent) and indent != [] do
+    if Keyword.keyword?(indent) do
+      normalize_pretty_keyword_opts(indent)
+    else
+      normalize_indent_value(indent, %{})
+    end
+  end
+
+  defp normalize_pretty_opts(indent), do: normalize_pretty_keyword_opts(indent)
+
+  defp normalize_pretty_keyword_opts(indent) when is_list(indent) do
     # Pretty print with custom separator options
+    validate_no_unknown_options!(
+      Keyword.drop(indent, [:indent, :line_separator, :after_colon]),
+      ":pretty option"
+    )
+
     raw_indent = Keyword.get(indent, :indent, 2)
 
     pretty_opts = %{}
@@ -908,7 +930,7 @@ defmodule RustyJson do
     {if(map_size(pretty_opts) > 0, do: pretty_opts, else: nil), indent_val}
   end
 
-  defp normalize_pretty_opts(indent) do
+  defp normalize_pretty_keyword_opts(indent) do
     {pretty_opts, indent_val} = normalize_indent_value(indent, %{})
     {if(map_size(pretty_opts) > 0, do: pretty_opts, else: nil), indent_val}
   end
@@ -932,8 +954,12 @@ defmodule RustyJson do
         # iodata list
         {Map.put(pretty_opts, :indent, IO.iodata_to_binary(indent)), 1}
 
-      true ->
+      indent in [false, nil] ->
         {pretty_opts, nil}
+
+      true ->
+        raise ArgumentError,
+              "invalid :pretty option #{inspect(indent)}, expected a boolean, positive integer, string, iodata, or keyword list"
     end
   end
 
@@ -982,12 +1008,12 @@ defmodule RustyJson do
   end
 
   @doc false
-  defp validate_keys!(keys) when keys in [:strings, :atoms, :atoms!, :copy, :intern], do: :ok
+  defp validate_keys!(keys) when keys in [:strings, :atoms!, :copy, :intern], do: :ok
   defp validate_keys!(keys) when is_function(keys, 1), do: :ok
 
   defp validate_keys!(other) do
     raise ArgumentError,
-          "invalid :keys option #{inspect(other)}, expected one of: :strings, :atoms, :atoms!, :copy, :intern, or a function/1"
+          "invalid :keys option #{inspect(other)}, expected one of: :strings, :atoms!, :copy, :intern, or a function/1"
   end
 
   # Raises an EncodeError from a NIF ErlangError.
@@ -1010,13 +1036,18 @@ defmodule RustyJson do
     {max_bytes, opts} = Keyword.pop(opts, :max_bytes, 0)
     {duplicate_keys, opts} = Keyword.pop(opts, :duplicate_keys, :last)
     {validate_strings, opts} = Keyword.pop(opts, :validate_strings, true)
-    {dirty_threshold, _opts} = Keyword.pop(opts, :dirty_threshold, @default_dirty_threshold_bytes)
+    {dirty_threshold, opts} = Keyword.pop(opts, :dirty_threshold, @default_dirty_threshold_bytes)
 
     validate_keys!(keys)
     validate_option!(strings_mode, [:copy, :reference], :strings)
     validate_option!(objects_mode, [:maps, :ordered_objects], :objects)
     validate_option!(floats_mode, [:native, :decimals], :floats)
     validate_option!(duplicate_keys, [:last, :error], :duplicate_keys)
+    validate_non_neg_integer!(digit_limit, :decoding_integer_digit_limit)
+    validate_non_neg_integer!(max_bytes, :max_bytes)
+    validate_boolean!(validate_strings, :validate_strings)
+    validate_non_neg_integer!(dirty_threshold, :dirty_threshold)
+    validate_no_unknown_options!(opts)
 
     {intern_keys, keys_fn} =
       case keys do
@@ -1032,7 +1063,7 @@ defmodule RustyJson do
       integer_digit_limit: digit_limit,
       max_bytes: max_bytes,
       reject_duplicate_keys: duplicate_keys == :error,
-      validate_strings: validate_strings == true
+      validate_strings: validate_strings
     }
 
     {keys, nif_opts, %{keys_fn: keys_fn, dirty_threshold: dirty_threshold}}
@@ -1084,7 +1115,7 @@ defmodule RustyJson do
   defp maybe_transform_keys(result, keys, %{keys_fn: keys_fn}) do
     cond do
       keys_fn != nil -> transform_keys(result, keys_fn)
-      keys in [:atoms, :atoms!] -> transform_keys(result, keys)
+      keys == :atoms! -> transform_keys(result, keys)
       true -> result
     end
   end
@@ -1119,6 +1150,30 @@ defmodule RustyJson do
     end
   end
 
+  defp validate_boolean!(value, _option_name) when is_boolean(value), do: :ok
+
+  defp validate_boolean!(value, option_name) do
+    raise ArgumentError,
+          "invalid :#{option_name} option #{inspect(value)}, expected a boolean"
+  end
+
+  defp validate_non_neg_integer!(value, _option_name)
+       when is_integer(value) and value >= 0,
+       do: :ok
+
+  defp validate_non_neg_integer!(value, option_name) do
+    raise ArgumentError,
+          "invalid :#{option_name} option #{inspect(value)}, expected a non-negative integer"
+  end
+
+  defp validate_no_unknown_options!(opts, context \\ "option list")
+  defp validate_no_unknown_options!([], _context), do: :ok
+
+  defp validate_no_unknown_options!(opts, context) do
+    options = opts |> Keyword.keys() |> Enum.uniq() |> Enum.map_join(", ", &inspect/1)
+    raise ArgumentError, "unknown #{context}: #{options}"
+  end
+
   @doc false
   # Handle OrderedObject: transform keys within the values list, preserving order
   defp transform_keys(%RustyJson.OrderedObject{values: values} = obj, keys_mode) do
@@ -1128,7 +1183,7 @@ defmodule RustyJson do
           cond do
             is_function(keys_mode, 1) and is_binary(k) -> keys_mode.(k)
             is_function(keys_mode, 1) -> k
-            true -> string_to_atom(k, keys_mode)
+            true -> string_to_existing_atom(k, keys_mode)
           end
 
         {new_key, transform_keys(v, keys_mode)}
@@ -1145,7 +1200,7 @@ defmodule RustyJson do
 
   defp transform_keys(value, keys_mode) when is_map(value) do
     Map.new(value, fn {k, v} ->
-      {string_to_atom(k, keys_mode), transform_keys(v, keys_mode)}
+      {string_to_existing_atom(k, keys_mode), transform_keys(v, keys_mode)}
     end)
   end
 
@@ -1156,15 +1211,11 @@ defmodule RustyJson do
   defp transform_keys(value, _keys_mode), do: value
 
   @doc false
-  defp string_to_atom(key, :atoms) when is_binary(key) do
-    String.to_atom(key)
-  end
-
-  defp string_to_atom(key, :atoms!) when is_binary(key) do
+  defp string_to_existing_atom(key, :atoms!) when is_binary(key) do
     String.to_existing_atom(key)
   end
 
-  defp string_to_atom(key, _), do: key
+  defp string_to_existing_atom(key, _), do: key
 
   @doc false
   defp error_message(%ErlangError{original: {msg, pos}})

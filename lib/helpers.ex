@@ -33,9 +33,6 @@ defmodule RustyJson.Helpers do
       ~s({"name":"Alice","age":30})
   """
   defmacro json_map(kv) do
-    # Jason behavior: preserve order (no sorting)
-    # kv = Enum.sort_by(kv, &elem(&1, 0))
-
     encoded_keys =
       Enum.map(kv, fn {key, _} ->
         key_str = Atom.to_string(key)
@@ -67,9 +64,6 @@ defmodule RustyJson.Helpers do
     ~s({"name":"Alice","age":30})
   """
   defmacro json_map_take(map, take) do
-    # Jason behavior: preserve order of requested keys (no sorting)
-    # take = Enum.sort(take)
-
     encoded_key_pairs =
       Enum.map(take, fn key ->
         key_str = Atom.to_string(key)

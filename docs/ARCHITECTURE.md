@@ -411,7 +411,7 @@ This is critical for:
 
 ### Why Protocol-by-Default with Opt-Out?
 
-1. **Jason compatibility**: Jason always dispatches through its Encoder protocol. Using `protocol: true` as the default ensures drop-in behavior.
+1. **Jason compatibility**: Jason always dispatches through its Encoder protocol. Using `protocol: true` as the default preserves that behavior.
 
 2. **Minimal overhead for built-in types**: Primitive types (strings, numbers, atoms) have pass-through implementations that add negligible cost.
 

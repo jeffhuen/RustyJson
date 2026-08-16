@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-08-16
+
+### Breaking Changes
+
+- Removed `keys: :atoms`, which created atoms dynamically. RustyJson now raises `ArgumentError` for this option; use string keys (the default) or `keys: :atoms!` when every atom already exists.
+- The lowercase `a` modifier for `~j` and `~J` has been removed. Use no modifier for string keys or uppercase `A` for existing atoms.
+- Unknown encode/decode options now raise `ArgumentError` instead of being ignored. Encode options `:protocol`, `:lean`, and `:sort_keys` require booleans; `:pretty` requires a documented value and rejects unknown nested keys. Decode option `:validate_strings` requires a boolean, while `:decoding_integer_digit_limit`, `:max_bytes`, and `:dirty_threshold` require non-negative integers.
+
+### Changed
+
+- Removed the library-owned `start_permanent` Mix project setting.
+
+### Fixed
+
+- NIF output allocation and resizing now return encode errors instead of panicking or releasing unwritten buffer capacity when an allocation fails.
+- Replaced encoder helper macro injection with ordinary shared functions and removed dead internal code.
+
+### Documentation
+
+- Reworked the README and added a key-handling guide explaining when RustyJson is useful, its native-code tradeoffs, and why decoded keys stay as strings.
+
 ## [0.3.13] - 2026-06-04
 
 ### Fixed
@@ -409,6 +430,7 @@ No regressions. Relative speedup vs Jason is unchanged from v0.2.0.
 - Zero-copy string handling in decoder for unescaped strings
 - SIMD-accelerated escape scanning via portable `std::simd`
 
+[0.4.0]: https://github.com/jeffhuen/rustyjson/compare/v0.3.13...v0.4.0
 [0.3.13]: https://github.com/jeffhuen/rustyjson/compare/v0.3.12...v0.3.13
 [0.3.12]: https://github.com/jeffhuen/rustyjson/compare/v0.3.11...v0.3.12
 [0.3.11]: https://github.com/jeffhuen/rustyjson/compare/v0.3.10...v0.3.11

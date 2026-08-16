@@ -1,14 +1,13 @@
 defmodule RustyJson.MixProject do
   use Mix.Project
 
-  @version "0.3.13"
+  @version "0.4.0"
 
   def project do
     [
       app: :rustyjson,
       version: @version,
       elixir: "~> 1.12",
-      start_permanent: Mix.env() == :prod,
       consolidate_protocols: Mix.env() != :test,
       deps: deps(),
       description: description(),
@@ -32,7 +31,7 @@ defmodule RustyJson.MixProject do
       {:rustler_precompiled, "~> 0.9"},
       {:rustler, "~> 0.38", optional: true},
       {:decimal, "~> 2.0 or ~> 3.0", optional: true},
-      {:ex_doc, "~> 0.30", only: :dev, runtime: false},
+      {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ] ++ bench_deps()
@@ -59,7 +58,7 @@ defmodule RustyJson.MixProject do
   end
 
   defp description() do
-    "Ultra-fast JSON encoding/decoding for Elixir. A drop-in Jason replacement that's 2-3x faster with 2-4x less memory, plus key interning for up to 2x faster bulk decoding. Full RFC 8259 compliance and memory safety. Purpose-built Rust NIFs, no serde."
+    "Ultra-fast JSON encoding/decoding for Elixir. A Jason-compatible API that's 2-3x faster with 2-4x less memory, plus key interning for up to 2x faster bulk decoding. Full RFC 8259 compliance and memory safety. Purpose-built Rust NIFs, no serde."
   end
 
   defp package() do
@@ -95,12 +94,13 @@ defmodule RustyJson.MixProject do
       extras: [
         "README.md",
         "CHANGELOG.md",
+        "docs/KEY_HANDLING.md",
         "docs/ARCHITECTURE.md",
         "docs/BENCHMARKS.md",
         "LICENSE"
       ],
       groups_for_extras: [
-        Overview: ["README.md", "CHANGELOG.md"],
+        Overview: ["README.md", "docs/KEY_HANDLING.md", "CHANGELOG.md"],
         Internals: ["docs/ARCHITECTURE.md", "docs/BENCHMARKS.md"]
       ],
       groups_for_modules: [

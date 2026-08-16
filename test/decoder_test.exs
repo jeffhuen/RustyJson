@@ -523,23 +523,11 @@ defmodule DecoderTest do
     end
   end
 
-  describe "decode with keys: :atoms (unsafe, creates atoms)" do
-    test ":atoms creates new atoms via String.to_atom/1" do
-      json = ~s({"brand_new_atoms_test_key": 1})
-      result = RustyJson.decode!(json, keys: :atoms)
-      assert result == %{brand_new_atoms_test_key: 1}
-    end
-
-    test ":atoms converts existing atoms" do
-      json = ~s({"name": "Alice"})
-      result = RustyJson.decode!(json, keys: :atoms)
-      assert result == %{name: "Alice"}
-    end
-
-    test ":atoms works recursively" do
-      json = ~s({"user": {"name": "Alice"}})
-      result = RustyJson.decode!(json, keys: :atoms)
-      assert result == %{user: %{name: "Alice"}}
+  describe "decode with keys: :atoms" do
+    test "rejects dynamic atom creation" do
+      assert_raise ArgumentError, ~r/invalid :keys option/, fn ->
+        RustyJson.decode!(~s({"name": "Alice"}), keys: :atoms)
+      end
     end
   end
 
@@ -767,6 +755,20 @@ defmodule DecoderTest do
     test "floats are not affected by digit limit" do
       json = ~s(1.23456789012345)
       assert {:ok, _} = RustyJson.decode(json, decoding_integer_digit_limit: 5)
+    end
+
+    test "rejects unknown options and invalid option types" do
+      invalid_options = [
+        [unknown: true],
+        [decoding_integer_digit_limit: "10"],
+        [max_bytes: "100"],
+        [dirty_threshold: -1],
+        [validate_strings: :yes]
+      ]
+
+      for opts <- invalid_options do
+        assert_raise ArgumentError, fn -> RustyJson.decode!("null", opts) end
+      end
     end
   end
 
