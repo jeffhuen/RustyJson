@@ -347,14 +347,21 @@ defmodule RustyJson do
 
   x86_64_variants = [avx2: avx2_detect]
 
-  # Diagnostic-only cargo features. `term_guard` validates every key/value term
-  # word before it reaches `enif_make_map_from_arrays`, which does no validation
-  # of its own and takes the whole VM down on an invalid word. Off unless asked
-  # for, so released artifacts are unaffected.
+  # Optional bundled allocator, opt-in only.
   #
-  #     RUSTYJSON_TERM_GUARD=1 FORCE_RUSTYJSON_BUILD=1 mix compile
+  # RustyJson ships with no bundled allocator. Enabling one is a whole-VM
+  # decision, not a library decision: a NIF is loaded into a BEAM that may
+  # already host other NIFs, and two NIFs that each statically link mimalloc
+  # will corrupt each other's heaps on macOS. See docs/ALLOCATOR_SAFETY.md.
+  #
+  #     RUSTYJSON_ALLOCATOR=mimalloc FORCE_RUSTYJSON_BUILD=1 mix compile
   cargo_features =
-    if System.get_env("RUSTYJSON_TERM_GUARD") in ["1", "true"], do: ["term_guard"], else: []
+    case System.get_env("RUSTYJSON_ALLOCATOR") do
+      "mimalloc" -> ["mimalloc"]
+      "jemalloc" -> ["jemalloc"]
+      "snmalloc" -> ["snmalloc"]
+      _ -> []
+    end
 
   use RustlerPrecompiled,
     otp_app: :rustyjson,

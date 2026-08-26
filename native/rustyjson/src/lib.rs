@@ -21,7 +21,6 @@ mod decimal;
 #[cfg(not(fuzzing))]
 mod nif_binary_writer;
 mod simd_utils;
-mod term_guard;
 
 #[cfg(not(feature = "bench"))]
 mod direct_decode;

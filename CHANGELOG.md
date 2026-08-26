@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-08-25
+
+### Fixed
+
+- Fixed a VM-killing segfault when another NIF in the same BEAM also bundles mimalloc. Two statically linked mimalloc copies share a fixed thread-local slot on macOS but keep private page maps, so one copy's `realloc` can silently copy zero bytes and return uninitialised memory. In RustyJson that zeroed object keys, which reached `enif_make_map_from_arrays` as `THE_NON_VALUE` and crashed the VM in `erts_cmp`. Reproduced against `rusty_csv`, which also bundles mimalloc.
+
+### Changed
+
+- `mimalloc` is now an opt-in cargo feature rather than a default, so published artifacts bundle no allocator. Decode is ~20% slower as a result (up to ~40% on small payloads). To opt back in, after checking RustyJson is the only allocator-bundling NIF in your VM: `RUSTYJSON_ALLOCATOR=mimalloc FORCE_RUSTYJSON_BUILD=1 mix compile`. See [allocator safety](docs/ALLOCATOR_SAFETY.md).
+- Pinned the build toolchain to `nightly-2026-07-27`; releases previously used a floating `@nightly`, so each artifact was built by a different, unrecorded compiler.
+
+### Added
+
+- `nif_version_2_18` cargo feature for OTP 29. Not yet wired into `nif_versions` — rustler_precompiled 0.9.0 caps supported versions at 2.17, so OTP 29 keeps loading the 2.17 artifact, which is verified to work correctly.
+- A regression test that fails the build if a default artifact ever links a bundled allocator again.
+
+### Documentation
+
+- Added [allocator safety](docs/ALLOCATOR_SAFETY.md): the hazard, how to audit your own NIFs, the performance tradeoff, and what does not fix it.
+- Added the [segfault investigation](docs/BEAM_SEGFAULT_INVESTIGATION.md) record.
+
 ## [0.4.0] - 2026-08-16
 
 ### Breaking Changes

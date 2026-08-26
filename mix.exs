@@ -1,7 +1,7 @@
 defmodule RustyJson.MixProject do
   use Mix.Project
 
-  @version "0.4.0"
+  @version "0.4.1"
 
   def project do
     [
@@ -79,6 +79,9 @@ defmodule RustyJson.MixProject do
         "native/rustyjson/src",
         "native/rustyjson/.cargo",
         "native/rustyjson/Cargo*",
+        # Ship the pinned toolchain so a force_build from Hex uses the same
+        # compiler the released artifacts were built with.
+        "native/rustyjson/rust-toolchain.toml",
         "checksum-*.exs"
       ]
     ]
@@ -95,13 +98,20 @@ defmodule RustyJson.MixProject do
         "README.md",
         "CHANGELOG.md",
         "docs/KEY_HANDLING.md",
+        "docs/ALLOCATOR_SAFETY.md",
         "docs/ARCHITECTURE.md",
         "docs/BENCHMARKS.md",
+        "docs/BEAM_SEGFAULT_INVESTIGATION.md",
         "LICENSE"
       ],
       groups_for_extras: [
         Overview: ["README.md", "docs/KEY_HANDLING.md", "CHANGELOG.md"],
-        Internals: ["docs/ARCHITECTURE.md", "docs/BENCHMARKS.md"]
+        Internals: [
+          "docs/ALLOCATOR_SAFETY.md",
+          "docs/ARCHITECTURE.md",
+          "docs/BENCHMARKS.md",
+          "docs/BEAM_SEGFAULT_INVESTIGATION.md"
+        ]
       ],
       groups_for_modules: [
         Encoding: [

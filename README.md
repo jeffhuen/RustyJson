@@ -53,6 +53,19 @@ for the supported targets and NIF versions. On x86_64, the build selects an AVX2
 variant when the host CPU supports it. To build from source, set
 `FORCE_RUSTYJSON_BUILD=true`.
 
+### Bundled allocators
+
+RustyJson ships with no bundled memory allocator. Bundling one is a whole-VM
+decision rather than a library one: two NIFs that each statically link mimalloc
+will silently corrupt each other's heaps on macOS and take the VM down. A
+bundled allocator is worth roughly 20% on decode, so the option remains, but
+read [allocator safety](docs/ALLOCATOR_SAFETY.md) and audit the other NIFs in
+your release before enabling it:
+
+```sh
+RUSTYJSON_ALLOCATOR=mimalloc FORCE_RUSTYJSON_BUILD=1 mix compile
+```
+
 ## Using the API
 
 The common encode/decode calls mirror Jason:
