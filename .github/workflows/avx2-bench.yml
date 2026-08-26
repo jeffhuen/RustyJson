@@ -1,0 +1,213 @@
+name: AVX2 benchmark
+
+# The x86_64 AVX2 variant is a third of the release matrix (15 of 45 assets) and
+# has never been measured against baseline. This job produces that number so the
+# variant can be kept, fixed, or deleted on evidence rather than assumption.
+#
+# Method notes, because a careless A/B here produces confident nonsense:
+#
+#   * Both variants run in ONE job on ONE runner. Actions hands out Intel or AMD
+#     depending on the day, so a cross-job comparison measures the runner
+#     lottery, not the code.
+#   * The runner is asserted to have AVX2 before anything is timed. Without that
+#     check a runner lacking it would benchmark baseline against baseline and
+#     report a tie.
+#   * The two binaries are diffed for ymm-register instructions before timing.
+#     If a build flag silently fails to apply, the result reads as "AVX2 doesn't
+#     help" instead of "the experiment didn't run".
+#   * Baseline is run TWICE. The first pair is an A/A null: identical code
+#     against itself, which measures this runner's noise floor. Any A/B delta
+#     smaller than that floor is not a result.
+#
+# Known limitation: the A/A null reuses one binary, so it captures run-to-run
+# noise but not code-layout luck. Treat deltas near the floor as inconclusive
+# rather than real.
+
+on:
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: "Criterion filter regex (blank = every bench)"
+        required: false
+        default: "string_scan|whitespace_skip|escape_decode|number_scan|number_parse|fnv_hash"
+      sample_size:
+        description: "Criterion sample size (higher = slower, tighter intervals)"
+        required: false
+        default: "100"
+
+permissions:
+  contents: read
+
+jobs:
+  avx2_bench:
+    name: baseline vs AVX2 (x86-64-v3)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      MANIFEST: native/rustyjson/Cargo.toml
+      CRITERION_HOME: ${{ github.workspace }}/criterion-home
+      AVX2_RUSTFLAGS: "-C target-cpu=x86-64-v3"
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Verify the runner actually has AVX2
+        run: |
+          set -euo pipefail
+          model=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ *//')
+          echo "CPU:   $model"
+          echo "Cores: $(nproc)"
+          {
+            echo "## Runner"
+            echo ""
+            echo "- **CPU:** $model"
+            echo "- **Cores:** $(nproc)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if ! grep -m1 '^flags' /proc/cpuinfo | tr ' ' '\n' | grep -qx avx2; then
+            echo "::error::This runner has no AVX2. Comparing baseline against baseline would report a meaningless tie."
+            exit 1
+          fi
+          echo "AVX2 present - proceeding."
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-27
+
+      - name: Build baseline bench binaries
+        run: |
+          set -euo pipefail
+          CARGO_TARGET_DIR="$PWD/target-baseline" \
+            cargo bench --manifest-path "$MANIFEST" --features bench --no-run
+
+      - name: Build AVX2 bench binaries
+        env:
+          RUSTFLAGS: ${{ env.AVX2_RUSTFLAGS }}
+        run: |
+          set -euo pipefail
+          CARGO_TARGET_DIR="$PWD/target-avx2" \
+            cargo bench --manifest-path "$MANIFEST" --features bench --no-run
+
+      - name: Control - prove the two builds differ
+        run: |
+          set -euo pipefail
+          count_ymm() {
+            local dir="$1" total=0 f n
+            for f in $(find "$dir/release/deps" -maxdepth 1 -type f -perm -u+x \
+                         \( -name 'decode_bench-*' -o -name 'encode_bench-*' \) ! -name '*.d'); do
+              n=$(objdump -d --no-show-raw-insn "$f" | grep -c '%ymm' || true)
+              echo "  $(basename "$f"): $n" >&2
+              total=$(( total + n ))
+            done
+            echo "$total"
+          }
+
+          echo "Baseline:" >&2
+          base=$(count_ymm "$PWD/target-baseline")
+          echo "AVX2:" >&2
+          avx2=$(count_ymm "$PWD/target-avx2")
+
+          echo "baseline ymm instructions: $base"
+          echo "avx2 ymm instructions:     $avx2"
+          {
+            echo ""
+            echo "## Control: do the binaries differ?"
+            echo ""
+            echo "| build | ymm instructions |"
+            echo "|---|---|"
+            echo "| baseline | $base |"
+            echo "| AVX2 (\`x86-64-v3\`) | $avx2 |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$avx2" -le "$base" ]; then
+            echo "::error::AVX2 build has no more ymm instructions than baseline ($avx2 <= $base). The build flag did not apply - any timing below would be invalid."
+            exit 1
+          fi
+          if [ "$base" -ne 0 ]; then
+            echo "::warning::Baseline emitted $base ymm instructions; expected 0. Check .cargo/config.toml and dependency target-features."
+          fi
+          echo "Builds differ as expected."
+
+      - name: Run 1 of 3 - baseline (establish)
+        run: |
+          set -euo pipefail
+          args=""
+          [ -n "${{ inputs.filter }}" ] && args="${{ inputs.filter }}"
+          CARGO_TARGET_DIR="$PWD/target-baseline" \
+            cargo bench --manifest-path "$MANIFEST" --features bench -- \
+              $args --sample-size "${{ inputs.sample_size }}" \
+            2>&1 | tee run1-baseline.log
+
+      - name: Run 2 of 3 - baseline again (A/A null, the noise floor)
+        run: |
+          set -euo pipefail
+          args=""
+          [ -n "${{ inputs.filter }}" ] && args="${{ inputs.filter }}"
+          CARGO_TARGET_DIR="$PWD/target-baseline" \
+            cargo bench --manifest-path "$MANIFEST" --features bench -- \
+              $args --sample-size "${{ inputs.sample_size }}" \
+            2>&1 | tee run2-aa-null.log
+
+      - name: Run 3 of 3 - AVX2 (the actual A/B)
+        env:
+          RUSTFLAGS: ${{ env.AVX2_RUSTFLAGS }}
+        run: |
+          set -euo pipefail
+          args=""
+          [ -n "${{ inputs.filter }}" ] && args="${{ inputs.filter }}"
+          CARGO_TARGET_DIR="$PWD/target-avx2" \
+            cargo bench --manifest-path "$MANIFEST" --features bench -- \
+              $args --sample-size "${{ inputs.sample_size }}" \
+            2>&1 | tee run3-avx2.log
+
+      - name: Summarize
+        if: always()
+        run: |
+          set -euo pipefail
+
+          # Criterion prints the benchmark id on its own unindented line, then
+          # indented "time:" / "change:" lines. Pair them back up.
+          extract() {
+            awk '
+              /^[^[:space:]]/ && NF { name = $0 }
+              /change:/ {
+                line = $0
+                sub(/^[[:space:]]+/, "", line)
+                printf "| `%s` | %s |\n", name, line
+              }
+            ' "$1"
+          }
+
+          {
+            echo ""
+            echo "## A/A null - identical code vs itself"
+            echo ""
+            echo "This is the noise floor. **Ignore any A/B delta smaller than what appears here.**"
+            echo ""
+            echo "| benchmark | change |"
+            echo "|---|---|"
+            extract run2-aa-null.log || echo "| (no data) | |"
+            echo ""
+            echo "## A/B - AVX2 vs baseline"
+            echo ""
+            echo "\`number_parse\` and \`fnv_hash\` are negative controls: they do no wide scanning,"
+            echo "so movement there is noise, not signal."
+            echo ""
+            echo "| benchmark | change |"
+            echo "|---|---|"
+            extract run3-avx2.log || echo "| (no data) | |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload logs and criterion reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: avx2-bench-results
+          path: |
+            run1-baseline.log
+            run2-aa-null.log
+            run3-avx2.log
+            criterion-home/
+          retention-days: 30
