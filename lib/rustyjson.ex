@@ -315,37 +315,19 @@ defmodule RustyJson do
     System.get_env("FORCE_RUSTYJSON_BUILD") in ["1", "true"] or
       Application.compile_env(:rustler_precompiled, :force_build, [])[:rustyjson] == true
 
-  # Detect AVX2 support at compile time for x86_64 targets.
-  # When available, downloads a variant built with -C target-cpu=x86-64-v3
-  # which enables 32-byte SIMD paths. Falls back to baseline SSE2 (16-byte).
-  avx2_detect = fn _config ->
-    try do
-      cond do
-        File.exists?("/proc/cpuinfo") ->
-          case File.read("/proc/cpuinfo") do
-            {:ok, info} -> String.contains?(info, "avx2")
-            _ -> false
-          end
-
-        match?({:win32, _}, :os.type()) ->
-          # On Windows, assume AVX2 for x86_64 — practically all x86_64 Windows
-          # machines in 2024+ have Haswell or newer. Worst case: falls back to
-          # baseline binary if the variant download fails.
-          true
-
-        true ->
-          # macOS x86_64: check via sysctl
-          case System.cmd("sysctl", ["-n", "hw.optional.avx2_0"], stderr_to_stdout: true) do
-            {"1\n", 0} -> true
-            _ -> false
-          end
-      end
-    rescue
-      _ -> false
-    end
-  end
-
-  x86_64_variants = [avx2: avx2_detect]
+  # No CPU-specific precompiled variants.
+  #
+  # Published artifacts target the x86_64 baseline (SSE2, 16-byte SIMD). Picking
+  # a CPU-specific artifact means guessing the host's capabilities at install
+  # time, and that guess is the whole problem: it needs a subprocess to probe
+  # macOS, it was simply hardcoded true on Windows, and getting it wrong hands
+  # an AVX2 binary to a CPU without AVX2, which is an illegal instruction and
+  # takes the VM down. See docs/CPU_TARGETING.md.
+  #
+  # Build from source to target the host CPU exactly, which beats the fixed
+  # x86-64-v3 floor the old variant used:
+  #
+  #     RUSTFLAGS="-C target-cpu=native" FORCE_RUSTYJSON_BUILD=1 mix compile
 
   # Optional bundled allocator, opt-in only.
   #
@@ -370,13 +352,6 @@ defmodule RustyJson do
     features: cargo_features,
     nif_versions: ["2.15", "2.16", "2.17"],
     targets: RustlerPrecompiled.Config.default_targets(),
-    variants: %{
-      "x86_64-unknown-linux-gnu" => x86_64_variants,
-      "x86_64-apple-darwin" => x86_64_variants,
-      "x86_64-pc-windows-msvc" => x86_64_variants,
-      "x86_64-pc-windows-gnu" => x86_64_variants,
-      "x86_64-unknown-linux-musl" => x86_64_variants
-    },
     version: version
 
   # NIF stubs - these are replaced by Rustler at runtime

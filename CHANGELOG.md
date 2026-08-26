@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-08-26
+
+### Fixed
+
+- Windows x86_64 no longer receives an AVX2 binary unconditionally. The variant selector assumed every x86_64 Windows machine supports AVX2; those that do not — Atom-lineage Celeron/Pentium, pre-Zen AMD, and hypervisors that mask the feature — received a binary that fails with an illegal instruction and takes down the VM.
+
+### Changed
+
+- Removed CPU-specific precompiled variants. Published artifacts now target the x86_64 (SSE2) and AArch64 (NEON) baselines, and each release ships 30 artifacts instead of 45. Selecting a variant meant guessing the host CPU at install time, and a wrong guess crashes the VM. To tune for your own processor, build from source: `RUSTFLAGS="-C target-cpu=native" FORCE_RUSTYJSON_BUILD=1 mix compile`. See [CPU targeting](docs/CPU_TARGETING.md).
+- Removed the compile-time `System.cmd("sysctl", ...)` AVX2 probe. Compiling RustyJson no longer executes any subprocess, which also clears a common dependency-audit finding.
+
+### Documentation
+
+- Added [CPU targeting](docs/CPU_TARGETING.md), with measured AVX2 effects: 26–55% faster on clean string scanning, but 22–40% *slower* on escape-heavy input, and a note that both figures are microbenchmarks rather than end-to-end decode.
+- Corrected the README, which still described mimalloc as the default allocator after 0.4.1 made it opt-in.
+
 ## [0.4.1] - 2026-08-25
 
 ### Fixed

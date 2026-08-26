@@ -49,9 +49,23 @@ end
 ```
 
 Prebuilt binaries are provided through [Rustler Precompiled](https://github.com/philss/rustler_precompiled)
-for the supported targets and NIF versions. On x86_64, the build selects an AVX2
-variant when the host CPU supports it. To build from source, set
-`FORCE_RUSTYJSON_BUILD=true`.
+for the supported targets and NIF versions. They target the x86_64 and AArch64
+baselines. To build from source, set `FORCE_RUSTYJSON_BUILD=true`.
+
+### CPU-specific builds
+
+RustyJson ships no CPU-specific precompiled variants. Choosing one means
+guessing the host's capabilities at install time, and an AVX2 binary on a CPU
+without AVX2 is an illegal instruction that takes down the VM. To tune for your
+own processor, build from source:
+
+```sh
+RUSTFLAGS="-C target-cpu=native" FORCE_RUSTYJSON_BUILD=1 mix compile
+```
+
+Read [CPU targeting](docs/CPU_TARGETING.md) first — wider SIMD is a large win on
+clean strings and a measurable loss on escape-heavy ones, and `native` builds
+must not be deployed to a different machine than they were built on.
 
 ### Bundled allocators
 
@@ -346,17 +360,16 @@ explicit encoder implementation.
 
 - All SIMD uses Rust's `std::simd`, with one code path per pattern and no `unsafe` blocks
 - The compiler generates optimal instructions for each target: SSE2 on x86_64, NEON on aarch64, scalar on others
-- AVX2 precompiled variants use 32-byte wide paths for additional throughput on Haswell+ CPUs
+- Builds targeting AVX2 use 32-byte wide paths; released artifacts target the
+  baseline, so this applies to source builds (see [CPU targeting](docs/CPU_TARGETING.md))
 
 ### Allocator
 
-RustyJson uses [mimalloc](https://github.com/microsoft/mimalloc) by default.
-Source builds can select jemalloc or snmalloc in `Cargo.toml`:
+RustyJson bundles no allocator. Source builds can opt into mimalloc, jemalloc,
+or snmalloc — read [allocator safety](docs/ALLOCATOR_SAFETY.md) first:
 
-```toml
-[features]
-default = ["mimalloc"]
-# Or: "jemalloc", "snmalloc"
+```sh
+RUSTYJSON_ALLOCATOR=mimalloc FORCE_RUSTYJSON_BUILD=1 mix compile
 ```
 
 ## Limits

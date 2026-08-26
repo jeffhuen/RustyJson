@@ -1,7 +1,7 @@
 defmodule RustyJson.MixProject do
   use Mix.Project
 
-  @version "0.4.1"
+  @version "0.4.2"
 
   def project do
     [
@@ -99,6 +99,7 @@ defmodule RustyJson.MixProject do
         "CHANGELOG.md",
         "docs/KEY_HANDLING.md",
         "docs/ALLOCATOR_SAFETY.md",
+        "docs/CPU_TARGETING.md",
         "docs/ARCHITECTURE.md",
         "docs/BENCHMARKS.md",
         "docs/BEAM_SEGFAULT_INVESTIGATION.md",
@@ -108,6 +109,7 @@ defmodule RustyJson.MixProject do
         Overview: ["README.md", "docs/KEY_HANDLING.md", "CHANGELOG.md"],
         Internals: [
           "docs/ALLOCATOR_SAFETY.md",
+          "docs/CPU_TARGETING.md",
           "docs/ARCHITECTURE.md",
           "docs/BENCHMARKS.md",
           "docs/BEAM_SEGFAULT_INVESTIGATION.md"
