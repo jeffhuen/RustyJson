@@ -19,6 +19,10 @@ name: AVX2 benchmark
 #     against itself, which measures this runner's noise floor. Any A/B delta
 #     smaller than that floor is not a result.
 #
+# `--bench decode_bench --bench encode_bench` is load-bearing: a bare `cargo
+# bench` also runs the lib unit-test target under the default libtest harness,
+# which rejects criterion's `--sample-size` and fails the step.
+#
 # Known limitation: the A/A null reuses one binary, so it captures run-to-run
 # noise but not code-layout luck. Treat deltas near the floor as inconclusive
 # rather than real.
@@ -80,7 +84,8 @@ jobs:
         run: |
           set -euo pipefail
           CARGO_TARGET_DIR="$PWD/target-baseline" \
-            cargo bench --manifest-path "$MANIFEST" --features bench --no-run
+            cargo bench --manifest-path "$MANIFEST" --features bench \
+              --bench decode_bench --bench encode_bench --no-run
 
       - name: Build AVX2 bench binaries
         env:
@@ -88,7 +93,8 @@ jobs:
         run: |
           set -euo pipefail
           CARGO_TARGET_DIR="$PWD/target-avx2" \
-            cargo bench --manifest-path "$MANIFEST" --features bench --no-run
+            cargo bench --manifest-path "$MANIFEST" --features bench \
+              --bench decode_bench --bench encode_bench --no-run
 
       - name: Control - prove the two builds differ
         run: |
@@ -138,7 +144,8 @@ jobs:
             args="${{ inputs.filter }}"
           fi
           CARGO_TARGET_DIR="$PWD/target-baseline" \
-            cargo bench --manifest-path "$MANIFEST" --features bench -- \
+            cargo bench --manifest-path "$MANIFEST" --features bench \
+              --bench decode_bench --bench encode_bench -- \
               $args --sample-size "${{ inputs.sample_size }}" \
             2>&1 | tee run1-baseline.log
 
@@ -150,7 +157,8 @@ jobs:
             args="${{ inputs.filter }}"
           fi
           CARGO_TARGET_DIR="$PWD/target-baseline" \
-            cargo bench --manifest-path "$MANIFEST" --features bench -- \
+            cargo bench --manifest-path "$MANIFEST" --features bench \
+              --bench decode_bench --bench encode_bench -- \
               $args --sample-size "${{ inputs.sample_size }}" \
             2>&1 | tee run2-aa-null.log
 
@@ -164,7 +172,8 @@ jobs:
             args="${{ inputs.filter }}"
           fi
           CARGO_TARGET_DIR="$PWD/target-avx2" \
-            cargo bench --manifest-path "$MANIFEST" --features bench -- \
+            cargo bench --manifest-path "$MANIFEST" --features bench \
+              --bench decode_bench --bench encode_bench -- \
               $args --sample-size "${{ inputs.sample_size }}" \
             2>&1 | tee run3-avx2.log
 
