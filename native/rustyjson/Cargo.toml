@@ -35,6 +35,10 @@ nif_version_2_15 = ["rustler/nif_version_2_15"]
 nif_version_2_16 = ["rustler/nif_version_2_16"]
 nif_version_2_17 = ["rustler/nif_version_2_17"]
 bench = []
+# Diagnostic build only. Validates every key/value term word before it is handed
+# to enif_make_map_from_arrays, which performs no validation of its own and
+# segfaults the whole VM on an invalid word. See src/term_guard.rs.
+term_guard = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }

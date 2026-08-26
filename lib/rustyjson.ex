@@ -347,10 +347,20 @@ defmodule RustyJson do
 
   x86_64_variants = [avx2: avx2_detect]
 
+  # Diagnostic-only cargo features. `term_guard` validates every key/value term
+  # word before it reaches `enif_make_map_from_arrays`, which does no validation
+  # of its own and takes the whole VM down on an invalid word. Off unless asked
+  # for, so released artifacts are unaffected.
+  #
+  #     RUSTYJSON_TERM_GUARD=1 FORCE_RUSTYJSON_BUILD=1 mix compile
+  cargo_features =
+    if System.get_env("RUSTYJSON_TERM_GUARD") in ["1", "true"], do: ["term_guard"], else: []
+
   use RustlerPrecompiled,
     otp_app: :rustyjson,
     base_url: "#{source_url}/releases/download/v#{version}",
     force_build: force_build?,
+    features: cargo_features,
     nif_versions: ["2.15", "2.16", "2.17"],
     targets: RustlerPrecompiled.Config.default_targets(),
     variants: %{

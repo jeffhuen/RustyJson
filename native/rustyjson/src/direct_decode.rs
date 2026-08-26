@@ -658,7 +658,18 @@ impl<'a, 'b> DirectParser<'a, 'b> {
     /// Parse an object key (interned if cache enabled)
     #[inline]
     fn parse_key(&mut self) -> Result<Term<'a>, DecodeError> {
-        self.parse_string_impl(true)
+        let key = self.parse_string_impl(true)?;
+        // Producer checkpoint (no-op unless the `term_guard` feature is on).
+        // Firing here means RustyJson itself emitted an unusable term; firing
+        // only at the consumer checkpoint in `parse_object` means the term was
+        // valid when created and was corrupted afterwards. See term_guard.rs.
+        if !crate::term_guard::check_produced("parse_key", key, self.input, self.pos) {
+            return Err((
+                Cow::Borrowed("term_guard: parse_key produced an invalid term"),
+                self.pos,
+            ));
+        }
+        Ok(key)
     }
 
     /// Scan past a JSON string and return the raw bytes between the quotes.
@@ -1200,6 +1211,17 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                 if self.opts.ordered_objects {
                     return self.build_ordered_object(&[first_key], &[first_value], obj_start);
                 }
+                if !crate::term_guard::check_arrays(
+                    &[first_key],
+                    &[first_value],
+                    self.input,
+                    obj_start,
+                ) {
+                    return Err((
+                        Cow::Borrowed("term_guard: invalid term in single-entry map arrays"),
+                        obj_start,
+                    ));
+                }
                 return Term::map_from_term_arrays(self.env, &[first_key], &[first_value])
                     .map_err(|_| (Cow::Borrowed("Failed to create map"), obj_start));
             }
@@ -1281,6 +1303,16 @@ impl<'a, 'b> DirectParser<'a, 'b> {
 
         if self.opts.ordered_objects {
             return self.build_ordered_object(&keys, &values, obj_start);
+        }
+
+        // Consumer checkpoint (no-op unless the `term_guard` feature is on).
+        // This is the exact call that crashed the VM on 2026-08-25: ERTS does
+        // no validation and dereferences every key word while sorting.
+        if !crate::term_guard::check_arrays(&keys, &values, self.input, obj_start) {
+            return Err((
+                Cow::Borrowed("term_guard: invalid term in map arrays"),
+                obj_start,
+            ));
         }
 
         // Fast path: no duplicate keys (common case)
@@ -1479,6 +1511,17 @@ impl<'a, 'b> DirectParser<'a, 'b> {
                 if self.opts.ordered_objects {
                     return self.build_ordered_object(&[first_key], &[first_value], obj_start);
                 }
+                if !crate::term_guard::check_arrays(
+                    &[first_key],
+                    &[first_value],
+                    self.input,
+                    obj_start,
+                ) {
+                    return Err((
+                        Cow::Borrowed("term_guard: invalid term in single-entry map arrays"),
+                        obj_start,
+                    ));
+                }
                 return Term::map_from_term_arrays(self.env, &[first_key], &[first_value])
                     .map_err(|_| (Cow::Borrowed("Failed to create map"), obj_start));
             }
@@ -1556,6 +1599,16 @@ impl<'a, 'b> DirectParser<'a, 'b> {
 
         // Build map first using keys by reference, then move keys into shape
         // to avoid an unnecessary .clone() of the Vec<Term>.
+        // Consumer checkpoint (no-op unless the `term_guard` feature is on).
+        // Not the path that crashed on 2026-08-25, but guarded so the
+        // instrument has no blind spot. See term_guard.rs.
+        if !crate::term_guard::check_arrays(&keys, &values, self.input, obj_start) {
+            return Err((
+                Cow::Borrowed("term_guard: invalid term in shape-capture map arrays"),
+                obj_start,
+            ));
+        }
+
         let result = if self.opts.ordered_objects {
             self.build_ordered_object(&keys, &values, obj_start)
         } else {
