@@ -66,6 +66,21 @@ RUSTFLAGS="-C target-feature=-crt-static -C target-cpu=native" \
   FORCE_RUSTYJSON_BUILD=1 mix compile
 ```
 
+## What a baseline build still gets
+
+Dropping the variants does not mean giving up AVX2 entirely. `simdutf8`, which
+RustyJson uses for UTF-8 validation, dispatches at **runtime**: it compiles an
+AVX2 implementation behind `#[target_feature]` and calls it only after checking
+the CPU. A baseline artifact contains that code and uses it on capable
+hardware — verified by disassembling the published binary, where every AVX2
+instruction in the x86_64 baseline artifact lives in
+`simdutf8::…::avx2::validate_utf8_basic` and nowhere else.
+
+Runtime dispatch is what makes this safe: one binary, correct everywhere, fast
+where it can be. RustyJson's own scanning paths use `std::simd` and are selected
+at compile time instead, so those run SSE2 in a baseline build. That is the only
+part a source build changes.
+
 ## Is it worth it?
 
 Measured on `ubuntu-22.04`, comparing an `x86-64-v3` build against baseline,
